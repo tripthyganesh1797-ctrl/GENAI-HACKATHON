@@ -144,7 +144,17 @@ _IMPERATIVE_VERBS = (
     "contact", "visit", "schedule", "connect", "install", "uninstall",
     "reset", "close", "drag", "adjust", "scroll", "plug", "unplug",
     "charge", "wipe", "reinsert", "insert", "download", "sign", "log",
-    "switch", "disconnect", "reconnect", "force", "hard",
+    "switch", "disconnect", "reconnect", "force", "hard", "try",
+    "ensure", "make", "verify", "confirm", "allow", "grant", "set",
+)
+
+# Transitional leads that some articles put BEFORE the actual imperative
+# ("Then, try to turn it on...", "Next, tap Settings...") -- stripped
+# before checking whether the remainder is an instruction, so the step
+# text itself doesn't carry the throwaway "Then," prefix.
+_TRANSITIONAL_LEAD_RE = re.compile(
+    r"^(then|next|after that|finally|now|once (?:that's )?done)\s*,?\s*",
+    re.IGNORECASE,
 )
 _NON_STEP_LEADS = (
     "note:", "if ", "some ", "available ", "this ", "not all", "with some",
@@ -179,7 +189,8 @@ def _is_step_sentence(sentence: str) -> bool:
     low = sentence.lower().strip()
     if any(low.startswith(lead) for lead in _NON_STEP_LEADS):
         return False
-    first_word = re.split(r"[\s,]", low, maxsplit=1)[0] if low else ""
+    low_stripped = _TRANSITIONAL_LEAD_RE.sub("", low)
+    first_word = re.split(r"[\s,]", low_stripped, maxsplit=1)[0] if low_stripped else ""
     if first_word in _IMPERATIVE_VERBS:
         return True
     for clause in re.split(r",\s*(?:and\s+)?then\s+|,\s*and\s+", sentence):
@@ -207,6 +218,7 @@ def extract_steps(section: Section) -> list[str]:
     cleaned = []
     for s in steps:
         s = re.sub(r"^(and\s+then\s+|then\s+)", "", s, flags=re.IGNORECASE)
+        s = _TRANSITIONAL_LEAD_RE.sub("", s)
         cleaned.append((s[0].upper() + s[1:]) if s else s)
     return cleaned
 
@@ -237,6 +249,7 @@ _TITLE_STOPWORDS = {
     "went", "go", "completely", "suddenly", "no", "not", "so", "it", "on",
     "in", "at", "with", "after", "when", "while", "to", "of", "for",
     "any", "other", "too", "just", "even", "some", "about", "than",
+    "also", "keeps", "keep", "very", "really", "still",
 }
 _TITLE_DOMAIN_PRIORITY = [
     "screen", "display", "battery", "touch", "touchscreen", "gesture",
@@ -338,14 +351,9 @@ def _looks_like_ui_action(step: str) -> bool:
                                    "swipe", "screen", "menu"))
 
 
-def offline_extract(technical_query: str, siis_response: str, core_problem: str | None = None) -> dict:
-    """Drop-in replacement for stage1_extract()'s return shape:
-    {"contexts": [Goal-shaped-dict, ...]}  (empty list = no_match)."""
-    core = core_problem or core_problem_phrase(technical_query)
-
-    if not siis_response or not siis_response.strip():
-        return {"contexts": []}
-
+def _build_single_goal(core: str, siis_response: str) -> dict | None:
+    """Core single-issue extraction: given ONE problem phrase and the
+    reference text, returns one Goal dict or None (no viable match)."""
     sections = parse_sections(siis_response)
     scored = [(sec, section_relevance(core, sec)) for sec in sections]
     best_section_relevance = max((s for _, s in scored), default=0.0)
@@ -353,7 +361,7 @@ def offline_extract(technical_query: str, siis_response: str, core_problem: str 
     best_relevance = max(best_section_relevance, whole_doc_relevance)
 
     if best_relevance < NO_MATCH_SECTION_THRESHOLD:
-        return {"contexts": []}
+        return None
 
     relevant_sections = [sec for sec, score in scored
                           if score >= max(NO_MATCH_SECTION_THRESHOLD, best_section_relevance * 0.5)]
@@ -372,7 +380,7 @@ def offline_extract(technical_query: str, siis_response: str, core_problem: str 
             steps_with_ctx.append((step, cat))
 
     if not steps_with_ctx:
-        return {"contexts": []}
+        return None
 
     # Group into one Action per distinct target: since deeplink matching
     # happens later in pipeline.py (shared Stage 2, same as the LLM path),
@@ -380,18 +388,121 @@ def offline_extract(technical_query: str, siis_response: str, core_problem: str 
     # keyword clustering so each Action stays screen-sized.
     actions = _group_steps(steps_with_ctx)
     if not actions:
-        return {"contexts": []}
+        return None
 
     title = make_title(core)
     score = round(min(0.99, 0.55 + 0.45 * best_relevance), 2)
     return {
-        "contexts": [{
-            "goal": make_goal(title),
-            "title": title,
-            "score": score,
-            "actions": actions,
-        }]
+        "goal": make_goal(title),
+        "title": title,
+        "score": score,
+        "actions": actions,
     }
+
+
+def offline_extract(technical_query: str, siis_response: str, core_problem: str | None = None) -> dict:
+    """Drop-in replacement for stage1_extract()'s return shape:
+    {"contexts": [Goal-shaped-dict, ...]}  (empty list = no_match).
+
+    Handles compound complaints ("battery dies fast and camera lags") by
+    splitting into independent sub-issues (see split_multi_issue) and
+    building a separate Goal per sub-issue that clears the relevance gate
+    against the SAME reference text -- so a single request can legitimately
+    come back with 2+ contexts, exactly like the schema's `contexts: List[Goal]`
+    was designed to allow. Falls back to the original single-issue
+    behaviour whenever no confident split is found, so this is fully
+    backward compatible with every already-passing official query.
+    """
+    if not siis_response or not siis_response.strip():
+        return {"contexts": []}
+
+    sub_queries = split_multi_issue(core_problem or technical_query)
+    if len(sub_queries) == 1:
+        core = core_problem or core_problem_phrase(technical_query)
+        goal = _build_single_goal(core, siis_response)
+        return {"contexts": [goal] if goal else []}
+
+    contexts = []
+    for sub_q in sub_queries:
+        sub_core = core_problem_phrase(sub_q)
+        goal = _build_single_goal(sub_core, siis_response)
+        if goal is not None:
+            contexts.append(goal)
+
+    if not contexts:
+        # None of the sub-issues found grounding -- try once more treating
+        # the complaint as a single issue before giving up entirely.
+        core = core_problem or core_problem_phrase(technical_query)
+        goal = _build_single_goal(core, siis_response)
+        return {"contexts": [goal] if goal else []}
+
+    contexts.sort(key=lambda g: g["score"], reverse=True)
+    return {"contexts": contexts}
+
+
+# --- Multi-issue splitting -------------------------------------------
+
+_DOMAIN_GROUPS = {
+    "battery": {"battery", "charge", "charging", "drain"},
+    "camera": {"camera", "photo", "video", "flash", "lens"},
+    "screen": {"screen", "display", "touch", "touchscreen", "gesture",
+               "swipe", "flicker", "crack", "blank", "black", "brightness",
+               "rotation", "rotate"},
+    "performance": {"slow", "lag", "laggy", "performance", "storage",
+                     "freeze", "crash", "update", "app"},
+    "connectivity": {"wifi", "bluetooth", "network", "signal", "data",
+                      "hotspot"},
+    "audio": {"speaker", "microphone", "volume", "sound", "mic", "audio"},
+}
+
+# Only "," and "and" are treated as genuine clause separators. A bare
+# "also"/"as well" is deliberately NOT a split point on its own -- it very
+# often sits mid-clause ("camera also lags"), not between two clauses, and
+# splitting there would fragment a single sentence.
+_SPLIT_RE = re.compile(r"\s*,\s*(?:and\s+)?|\s+\band\b\s+", re.IGNORECASE)
+
+
+def _stem(token: str) -> str:
+    """Crude suffix stripping so 'lags'/'draining'/'crashes' match the
+    same domain keyword as 'lag'/'drain'/'crash' without a full stemmer
+    dependency."""
+    for suffix in ("ing", "es", "ed", "s"):
+        if token.endswith(suffix) and len(token) - len(suffix) >= 3:
+            return token[: -len(suffix)]
+    return token
+
+
+def _dominant_domains(tokens: set[str]) -> set[str]:
+    stems = {_stem(t) for t in tokens} | tokens
+    hits = set()
+    for domain, kws in _DOMAIN_GROUPS.items():
+        kw_stems = {_stem(k) for k in kws} | kws
+        if stems & kw_stems:
+            hits.add(domain)
+    return hits
+
+
+def split_multi_issue(query_text: str) -> list[str]:
+    """Splits a compound complaint into independent sub-complaints ONLY
+    when it clearly names 2+ domain-disjoint issues (e.g. "battery dies
+    fast and camera lags on open"). Returns [query_text] unchanged
+    otherwise -- deliberately conservative, since a false split would
+    silently fragment a single coherent complaint (worse than occasionally
+    missing a real multi-issue case)."""
+    parts = [p.strip(" .") for p in _SPLIT_RE.split(query_text) if p.strip(" .")]
+    if len(parts) < 2:
+        return [query_text]
+
+    part_domains = [_dominant_domains(significant_tokens(p)) for p in parts]
+    if any(not d for d in part_domains):
+        return [query_text]  # a part with no recognizable domain -> too risky
+
+    for i in range(len(parts)):
+        for j in range(i + 1, len(parts)):
+            if part_domains[i] & part_domains[j]:
+                return [query_text]  # shared domain -> one issue described in detail
+
+    return parts
 
 
 def _group_steps(steps_with_ctx: list[tuple[str, str]]) -> list[dict]:

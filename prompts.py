@@ -73,6 +73,14 @@ NON-NEGOTIABLE RULES (violating any of these fails automated grading):
 7. Do NOT hallucinate a fix. If the reference text has no viable solution for
    this query, return {{"contexts": []}} exactly, with nothing else.
 8. Output ONLY raw JSON. No markdown code fences. No explanation text.
+9. MULTI-ISSUE COMPLAINTS: if the query clearly describes 2 or more DISTINCT,
+   domain-disjoint problems (e.g. "battery dies fast and camera lags when I
+   open it" -- battery AND camera are unrelated symptoms), return ONE
+   separate Goal object per issue inside "contexts" (each with its own
+   goal/title/actions), ordered by your confidence (highest "score" first).
+   Do NOT do this for a single issue described with multiple details or
+   steps (e.g. "screen flickers and then goes black" is ONE display issue,
+   not two) -- only split when the issues are genuinely unrelated domains.
 
 OUTPUT SCHEMA (Goal object, wrapped in a contexts list):
 {{
