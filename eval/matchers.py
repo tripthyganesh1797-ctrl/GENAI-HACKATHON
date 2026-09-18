@@ -2,82 +2,51 @@
 matchers.py — Three deeplink-matching architectures, so the ablation study
 in metrics.md is backed by real, run code rather than opinions.
 
-Variant A (rules-based): deterministic substring match on the single most
-    distinctive word in the query. Zero LLM cost, fastest, least flexible.
-Variant B (hybrid): keyword-overlap scoring (Jaccard + coverage) — this is
-    what the shipped pipeline.py actually uses.
-Variant C (full-LLM): asks the LLM itself to pick the best catalog entry by
-    ID, given the full catalog. Most flexible, highest cost and latency.
+Variant A (rules-based): deterministic fuzzy keyword matching, no ranking
+    model -- deeplink_matching.RulesDeeplinkIndex. This is also the
+    service's own fallback if index construction ever fails.
+Variant B (hybrid): BM25 + dense (sentence-transformers if available,
+    else TF-IDF/SVD) -- deeplink_matching.HybridDeeplinkIndex. This is
+    what the shipped pipeline.py actually uses by default.
+Variant C (full-LLM): asks the LLM itself to pick the best catalog entry
+    by ID, given the full catalog. Most flexible, highest cost and
+    latency -- and not used in the shipped pipeline for that reason.
 """
 
-import re
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from llm_client import call_llm_json  # noqa: E402
+from deeplink_matching import RulesDeeplinkIndex, HybridDeeplinkIndex  # noqa: E402
 
-STOPWORDS = {
-    "tap", "on", "the", "a", "an", "to", "and", "for", "of", "settings",
-    "open", "your", "will", "it", "in", "under", "check", "choose", "app",
-    "per", "at", "once", "device", "or",
-}
+_rules_index_cache = {}
+_hybrid_index_cache = {}
 
 
-def _keywords(text: str) -> set:
-    words = re.findall(r"[a-z0-9]+", text.lower())
-    return {w for w in words if w not in STOPWORDS and len(w) > 2}
+def _index_key(catalog):
+    return id(catalog)
 
-
-# ---------------------------------------------------------------------------
-# Variant A: Pure rules-based
-# ---------------------------------------------------------------------------
 
 def match_rules_based(query: str, catalog: list) -> str:
-    """Picks the catalog entry whose description shares the SINGLE most
-    distinctive (longest) keyword with the query. No scoring, no ranking —
-    just a deterministic first-match rule."""
-    query_kw = _keywords(query)
-    if not query_kw:
-        return None
-    # Sort keywords longest-first: a rules engineer would prioritise the
-    # most specific/rare term as the strongest signal.
-    for keyword in sorted(query_kw, key=len, reverse=True):
-        for entry in catalog:
-            haystack = (entry["description"] + " " + entry.get("message", "")).lower()
-            if keyword in haystack:
-                return entry["deeplink"]
-    return None
+    key = _index_key(catalog)
+    if key not in _rules_index_cache:
+        _rules_index_cache[key] = RulesDeeplinkIndex(catalog)
+    entry, _score = _rules_index_cache[key].best_match(query)
+    return entry.deeplink if entry else None
 
-
-# ---------------------------------------------------------------------------
-# Variant B: Hybrid keyword-overlap (matches production pipeline.py)
-# ---------------------------------------------------------------------------
 
 def match_hybrid(query: str, catalog: list) -> str:
-    query_kw = _keywords(query)
-    best_id, best_score = None, 0.0
-    for entry in catalog:
-        haystack_kw = _keywords(entry["description"] + " " + entry.get("message", ""))
-        if not query_kw or not haystack_kw:
-            continue
-        overlap = len(query_kw & haystack_kw)
-        union = len(query_kw | haystack_kw)
-        jaccard = overlap / union if union else 0.0
-        coverage = overlap / min(len(query_kw), len(haystack_kw))
-        score = 0.6 * jaccard + 0.4 * coverage
-        if score > best_score:
-            best_score, best_id = score, entry["deeplink"]
-    return best_id if best_score >= 0.4 else None
+    key = _index_key(catalog)
+    if key not in _hybrid_index_cache:
+        _hybrid_index_cache[key] = HybridDeeplinkIndex(catalog)
+    entry, _score = _hybrid_index_cache[key].best_match(query)
+    return entry.deeplink if entry else None
 
-
-# ---------------------------------------------------------------------------
-# Variant C: Full-LLM mapping
-# ---------------------------------------------------------------------------
 
 def match_llm(query: str, catalog: list) -> str:
     catalog_lines = "\n".join(
-        f"{i}: {entry['description']}" for i, entry in enumerate(catalog)
+        f"{i}: {entry.description} | {entry.message}" for i, entry in enumerate(catalog)
     )
     prompt = f"""Given this user need: "{query}"
 
@@ -92,7 +61,7 @@ If nothing matches well, use -1.
         result = call_llm_json(prompt, max_tokens=500)
         idx = result.get("best_match_index", -1)
         if 0 <= idx < len(catalog):
-            return catalog[idx]["deeplink"]
+            return catalog[idx].deeplink
     except Exception:
         pass
     return None

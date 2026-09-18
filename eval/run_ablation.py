@@ -14,13 +14,14 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from matchers import match_rules_based, match_hybrid, match_llm
+from deeplink_matching import load_deeplinks
+from pipeline import llm_available
 import llm_client
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 PARENT_DIR = os.path.dirname(THIS_DIR)
 
-with open(os.path.join(PARENT_DIR, "deeplinks.json")) as f:
-    CATALOG = json.load(f)
+CATALOG = load_deeplinks(os.path.join(PARENT_DIR, "deeplinks.json"))
 
 with open(os.path.join(THIS_DIR, "deeplink_ground_truth.json")) as f:
     GROUND_TRUTH = json.load(f)
@@ -38,7 +39,7 @@ def run_variant(name: str, match_fn) -> dict:
         elapsed_ms = (time.time() - start) * 1000
         latencies.append(elapsed_ms)
 
-        if name == "Full-LLM Mapping":
+        if "Full-LLM" in name:
             total_tokens += llm_client.LAST_USAGE["total_tokens"]
             total_cost += llm_client.estimate_cost_usd(
                 llm_client.LAST_USAGE["prompt_tokens"],
@@ -63,11 +64,14 @@ def run_variant(name: str, match_fn) -> dict:
 def main():
     print(f"Running ablation study on {len(GROUND_TRUTH)} labeled test cases...\n")
 
-    results = [
-        run_variant("Baseline: Full-LLM Mapping", match_llm),
-        run_variant("Variant A: Hybrid Keyword Overlap", match_hybrid),
-        run_variant("Variant B: Pure Rules-Based", match_rules_based),
-    ]
+    variants = [("Variant B: Hybrid BM25 + Dense", match_hybrid),
+                ("Variant A: Pure Rules-Based", match_rules_based)]
+    if llm_available():
+        variants.insert(0, ("Baseline: Full-LLM Mapping", match_llm))
+    else:
+        print("(Skipping Baseline: Full-LLM Mapping -- no LLM_API_KEY configured)\n")
+
+    results = [run_variant(name, fn) for name, fn in variants]
 
     # Print as the exact markdown table shape used in Appendix C
     print("## 5. Architectural Ablation Analysis\n")

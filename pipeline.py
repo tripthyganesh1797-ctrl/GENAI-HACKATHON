@@ -189,6 +189,7 @@ def run_pipeline(raw_complaint: str, siis_response: str = "") -> dict:
             "total_tokens": total_prompt_tokens + total_completion_tokens,
             "fallback": "no_match" if not contexts else None,
             "used_offline_fallback": used_fallback_any,
+            "detected_language": enrichment.get("detected_language", "en" if used_fallback_any else None),
             "validation_errors": all_errors,
         },
     }

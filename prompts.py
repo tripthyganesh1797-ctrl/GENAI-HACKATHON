@@ -11,21 +11,30 @@ pipeline.py) so your team can iterate on wording without touching logic code.
 
 STAGE0_ENRICHMENT_PROMPT = """You are a technical support query normaliser for Samsung Galaxy devices.
 
-A user has described a device problem in casual, imprecise language. Your job:
-1. Rewrite it as ONE clean, canonical technical query (short phrase, no fluff).
-2. Generate 8 to 10 DISTINCT paraphrases of that complaint, spanning different
-   registers: formal, casual, keyword-only, frustrated/emotional, and a couple
-   with realistic typos.
+A user has described a device problem in casual, imprecise language, in
+ANY language or mix of languages (English, Hindi, Hinglish, Spanish,
+French, etc. -- or code-switched, e.g. "phone bahuth garam ho rha hai").
+Your job:
+1. Understand the complaint regardless of language, and rewrite it as ONE
+   clean, canonical TECHNICAL QUERY IN ENGLISH (short phrase, no fluff) --
+   the rest of the pipeline (deeplink catalog, schema) is English-only, so
+   this is the translation point.
+2. Generate 8 to 10 DISTINCT ENGLISH paraphrases of that complaint,
+   spanning different registers: formal, casual, keyword-only,
+   frustrated/emotional, and a couple with realistic typos.
 
 Rules:
 - Do NOT invent details the user did not mention.
 - Do NOT include any URLs.
+- Preserve the original complaint's meaning exactly when translating --
+  do not add or drop symptoms.
 - Output ONLY valid JSON, no markdown fences, no preamble.
 
 Output JSON schema:
 {{
-  "technical_query": "<canonical short phrase>",
-  "query_variations": ["<paraphrase 1>", "<paraphrase 2>", ... 8 to 10 total]
+  "technical_query": "<canonical short phrase, in English>",
+  "query_variations": ["<paraphrase 1>", "<paraphrase 2>", ... 8 to 10 total, in English],
+  "detected_language": "<ISO 639-1 code of the language the complaint was written in, e.g. 'en', 'hi'>"
 }}
 
 User complaint: "{raw_complaint}"

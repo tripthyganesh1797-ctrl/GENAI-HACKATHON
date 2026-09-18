@@ -14,13 +14,19 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pipeline import run_pipeline
+from pipeline import run_pipeline, llm_available
 from llm_client import MODEL
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 PARENT_DIR = os.path.dirname(THIS_DIR)
 
-with open(os.path.join(PARENT_DIR, "sample_queries.json")) as f:
+# Real 20 official Samsung PRISM Theme 2 queries + their SIIS grounding
+# text (data/official_theme2_data/siis_responses.json, adapted into this
+# shape in sample_queries_real.json). The original placeholder
+# sample_queries.json (Battery/Camera/Display/Performance, no grounding
+# text) is kept around for quick manual smoke tests but is no longer what
+# the submitted metrics are measured against.
+with open(os.path.join(PARENT_DIR, "sample_queries_real.json")) as f:
     QUERY_SET = json.load(f)
 
 
@@ -41,10 +47,14 @@ def check_deeplink_validity(contexts: list) -> tuple:
 
 def run_cold_pass():
     """First pass: every query is genuinely new, so this measures cold-path
-    (non-cached) latency and schema/deeplink quality."""
+    (non-cached) latency and schema/deeplink quality. Passes the real SIIS
+    reference text for each query, exactly as the live API contract
+    expects (siis_response is what the extractor must ground its steps
+    in -- without it there's nothing to derive a plan from beyond a cache
+    hit)."""
     results = []
     for case in QUERY_SET:
-        result = run_pipeline(case["complaint"])
+        result = run_pipeline(case["complaint"], case.get("siis_response", ""))
         meta = result["meta"]
         contexts = result["response"]["contexts"]
         auto_total, auto_valid = check_deeplink_validity(contexts)
@@ -120,15 +130,21 @@ def generate_metrics_md(cold_results: list, paraphrase_hits: int, paraphrase_tot
             "| :--- | :--- | :--- | :--- | :--- |\n" + rows
         )
 
+    offline_count = sum(1 for r in cold_results if r.get("used_offline_fallback"))
+    mode_line = (
+        f"Offline rule-based fallback (no LLM_API_KEY configured; {offline_count}/{n} requests used it)"
+        if not llm_available() else f"{MODEL} (LLM path; offline fallback used on {offline_count}/{n} requests)"
+    )
+
     md = f"""# System Performance & Evaluation Report
-**Model(s):** {MODEL}
-**Embeddings:** Keyword-overlap (Jaccard + coverage) — see eval/matchers.py for embeddings-based variant comparison
-**Environment:** Generated automatically by eval/eval_harness.py
+**Model(s):** {mode_line}
+**Embeddings:** Hybrid BM25 + dense (sentence-transformers/all-MiniLM-L6-v2 when reachable, else offline TF-IDF/SVD-128) — see deeplink_matching.py; Variant A (pure rules-based) also shipped as the fallback. See eval/matchers.py for the ablation.
+**Environment:** Generated automatically by eval/eval_harness.py, against the official Theme 2 dataset (data/official_theme2_data/, 578 real deeplinks, 20 official SIIS queries)
 
 ---
 
 ## 1. Schema & Rule Compliance
-Evaluated on {n} sample scenarios covering all 4 device domains.
+Evaluated on {n} official Theme 2 scenarios (Screen/Display domain: blank/black screen, cracking, flicker, touch delay, floating icon).
 
 | Metric | Target | Measured Value |
 | :--- | :--- | :--- |
@@ -141,7 +157,7 @@ Evaluated on {n} sample scenarios covering all 4 device domains.
 ---
 
 ## 2. Accuracy Benchmarks
-Evaluated against {len(cold_results)} reference scenarios across Battery, Display, Camera, and Performance.
+Evaluated against {len(cold_results)} official reference scenarios (Screen/Display domain).
 
 | Evaluation Metric | Scale / Anchor | Score |
 | :--- | :--- | :--- |
@@ -176,9 +192,12 @@ Evaluated against {len(cold_results)} reference scenarios across Battery, Displa
 ---
 
 ## 6. Known Edge Cases & System Limitations
-* Deeplink catalog currently has 40 entries; matching accuracy will improve as the catalog is expanded with more real Settings screens.
-* Rules-based and hybrid matchers occasionally select a deeplink from the wrong domain when the catalog lacks a precise entry (see ablation study for measured impact).
-* Full-LLM matching variant has meaningfully higher latency and non-zero cost per query, and is not used in the shipped pipeline for this reason.
+* Deeplink catalog is the full official 578-entry set (data/official_theme2_data/deeplinks.json).
+* Query-to-SIIS relevance gating: one official query (a floating "Assistive menu" circle complaint) is paired with SIIS reference text that actually documents Multi-Window/Edge-panel features, not the assistive-menu circle. The engine's section-relevance check correctly treats this as `no_match` rather than force-fitting Edge-panel steps to an unrelated complaint -- this is the intended behavior for "no viable solution in the reference text," not a bug, but it means the no-match rate above reflects both genuinely out-of-scope complaints and this kind of retrieval/grounding mismatch.
+* Ablation result (section 5) is counterintuitive but real: the pure rules-based fuzzy matcher (Variant A) outperformed the hybrid BM25+dense matcher (Variant B) on the labeled ground truth in this environment. This sandbox's network blocks HuggingFace Hub (sentence-transformers falls back to an offline TF-IDF/SVD-128 dense representation, not real embeddings), which likely understates Variant B; on a machine with HF Hub access the hybrid path will use real sentence-transformer embeddings automatically (see deeplink_matching.py `_try_load_sentence_transformer`) and should be re-benchmarked there before assuming either variant is "better" in production.
+* Offline fallback (offline_fallback.py) activates automatically whenever LLM_API_KEY is unset or an LLM call/JSON-parse fails; it is deterministic, $0 cost, and English-only. The LLM path (prompts.py) explicitly handles multi-language complaints (incl. Hindi/Hinglish) and translates to English internally; the offline fallback does not translate, so non-English complaints without an LLM key will likely miss the relevance gate and return `no_match`.
+* Voice input (index.html) uses the browser's Web Speech API client-side; it is unsupported in Firefox and requires an internet connection for speech recognition in most browsers (this is a browser/OS limitation, not something the backend controls).
+* Full-LLM matching variant (Variant C in the ablation) has meaningfully higher latency and non-zero cost per query, and is not used in the shipped pipeline for this reason.
 * Semantic cache hit rate on paraphrases is measured on a single re-run per query; real-world hit rate over many repeated users may differ.
 """
     return md

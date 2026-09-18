@@ -1,0 +1,20 @@
+[
+  {
+    "variant": "Variant B: Hybrid BM25 + Dense",
+    "step_accuracy": 0.5,
+    "latency_p95_ms": 3.04,
+    "avg_latency_ms": 263.46,
+    "cost_per_query": 0.0,
+    "correct": 10,
+    "total": 20
+  },
+  {
+    "variant": "Variant A: Pure Rules-Based",
+    "step_accuracy": 0.7,
+    "latency_p95_ms": 6.77,
+    "avg_latency_ms": 3.98,
+    "cost_per_query": 0.0,
+    "correct": 14,
+    "total": 20
+  }
+]

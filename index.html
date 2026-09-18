@@ -88,10 +88,32 @@
         <span class="text-inkdim text-[11px] font-mono ml-1">diagnostic_input.sh</span>
       </div>
 
-      <label class="block text-inkdim text-xs font-mono mb-2">$ describe_complaint</label>
-      <textarea id="complaintInput" rows="3"
-        placeholder="my camera app crashes and battery dies fast"
-        class="w-full bg-void border border-line rounded-lg px-3 py-2.5 text-sm text-ink placeholder-inkdim/50 font-mono focus:outline-none focus:border-violet/60 focus:ring-1 focus:ring-violet/40 resize-none transition-colors duration-150"></textarea>
+      <div class="flex items-center justify-between mb-2">
+        <label class="block text-inkdim text-xs font-mono">$ describe_complaint</label>
+        <select id="langSelect" title="Speech + query language"
+          class="bg-void border border-line rounded text-[10px] font-mono text-inkdim px-1.5 py-1 focus:outline-none focus:border-violet/60">
+          <option value="en-US">EN</option>
+          <option value="en-IN">EN-IN</option>
+          <option value="hi-IN">HI</option>
+          <option value="es-ES">ES</option>
+          <option value="fr-FR">FR</option>
+        </select>
+      </div>
+      <div class="relative">
+        <textarea id="complaintInput" rows="3"
+          placeholder="my camera app crashes and battery dies fast"
+          class="w-full bg-void border border-line rounded-lg px-3 py-2.5 pr-11 text-sm text-ink placeholder-inkdim/50 font-mono focus:outline-none focus:border-violet/60 focus:ring-1 focus:ring-violet/40 resize-none transition-colors duration-150"></textarea>
+        <button id="micBtn" type="button" title="Speak your complaint"
+          class="absolute right-2 top-2 w-7 h-7 rounded-md border border-line hover:border-cyan/60 flex items-center justify-center text-inkdim hover:text-cyan transition-colors duration-150">
+          <svg id="micIcon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+            <line x1="12" y1="19" x2="12" y2="23"></line>
+            <line x1="8" y1="23" x2="16" y2="23"></line>
+          </svg>
+        </button>
+      </div>
+      <p id="micStatus" class="text-[10px] font-mono text-inkdim mt-1 h-3"></p>
 
       <button id="diagnoseBtn"
         class="w-full mt-3 bg-violet hover:bg-violet/85 text-white font-display font-semibold text-sm py-2.5 rounded-lg transition-colors duration-150 flex items-center justify-center gap-2">
@@ -178,6 +200,67 @@ const API_BASE = 'http://localhost:8000';
 const complaintInput = document.getElementById('complaintInput');
 const diagnoseBtn = document.getElementById('diagnoseBtn');
 const resultContainer = document.getElementById('resultContainer');
+const langSelect = document.getElementById('langSelect');
+const micBtn = document.getElementById('micBtn');
+const micStatus = document.getElementById('micStatus');
+
+// --- Voice input (Web Speech API) ---------------------------------------
+// Runs entirely client-side in the browser (Chrome/Edge support this
+// natively) -- no backend change needed. The recognised text is dropped
+// straight into the same textarea the typed flow uses, so everything
+// downstream (cache, LLM/offline pipeline, multi-language handling in
+// prompts.py) works unchanged. Falls back to a disabled button with an
+// explanation on browsers without SpeechRecognition (e.g. Firefox).
+const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognizer = null;
+let listening = false;
+
+if (!SpeechRecognitionCtor) {
+  micBtn.disabled = true;
+  micBtn.classList.add('opacity-40', 'cursor-not-allowed');
+  micBtn.title = 'Voice input not supported in this browser (try Chrome/Edge)';
+} else {
+  recognizer = new SpeechRecognitionCtor();
+  recognizer.continuous = false;
+  recognizer.interimResults = true;
+
+  recognizer.onstart = () => {
+    listening = true;
+    micBtn.classList.add('text-red', 'border-red/60');
+    micStatus.textContent = 'listening…';
+  };
+  recognizer.onerror = (e) => {
+    micStatus.textContent = `mic error: ${e.error}`;
+  };
+  recognizer.onend = () => {
+    listening = false;
+    micBtn.classList.remove('text-red', 'border-red/60');
+    setTimeout(() => { if (!listening) micStatus.textContent = ''; }, 1500);
+  };
+  recognizer.onresult = (event) => {
+    let transcript = '';
+    for (let i = 0; i < event.results.length; i++) {
+      transcript += event.results[i][0].transcript;
+    }
+    complaintInput.value = transcript;
+    micStatus.textContent = event.results[event.results.length - 1].isFinal
+      ? 'captured — review and run diagnosis'
+      : 'listening…';
+  };
+
+  micBtn.addEventListener('click', () => {
+    if (listening) {
+      recognizer.stop();
+      return;
+    }
+    recognizer.lang = langSelect.value;
+    try {
+      recognizer.start();
+    } catch (e) {
+      micStatus.textContent = 'could not start mic';
+    }
+  });
+}
 const statusDot = document.getElementById('statusDot');
 const apiStatusText = document.getElementById('apiStatusText');
 

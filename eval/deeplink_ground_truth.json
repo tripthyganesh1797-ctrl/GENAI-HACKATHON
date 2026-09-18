@@ -1,22 +1,122 @@
 [
-  {"query": "battery usage per app draining", "expected_id": "bixby://masked/act/0004"},
-  {"query": "turn on power saving mode", "expected_id": "bixby://masked/act/0006"},
-  {"query": "lower screen resolution to save battery", "expected_id": "bixby://masked/act/0007"},
-  {"query": "clear camera app cache and storage", "expected_id": "bixby://masked/act/0008"},
-  {"query": "check camera app permissions enabled", "expected_id": "bixby://masked/act/0009"},
-  {"query": "run device care performance optimizer", "expected_id": "bixby://masked/act/0010"},
-  {"query": "free up storage space general cleanup", "expected_id": "bixby://masked/act/0011"},
-  {"query": "check for latest software update", "expected_id": "bixby://masked/act/0012"},
-  {"query": "adaptive battery learn app usage", "expected_id": "bixby://masked/act/0016"},
-  {"query": "show battery percentage in status bar", "expected_id": "bixby://masked/act/0017"},
-  {"query": "turn dark mode on or off", "expected_id": "bixby://masked/act/0021"},
-  {"query": "change screen timeout duration", "expected_id": "bixby://masked/act/0022"},
-  {"query": "adjust font size and screen zoom", "expected_id": "bixby://masked/act/0023"},
-  {"query": "reduce blue light eye comfort", "expected_id": "bixby://masked/act/0027"},
-  {"query": "change photo and video resolution quality", "expected_id": "bixby://masked/act/0028"},
-  {"query": "reset camera shooting modes to default", "expected_id": "bixby://masked/act/0029"},
-  {"query": "free up RAM close background apps", "expected_id": "bixby://masked/act/0033"},
-  {"query": "clear cache for all apps at once", "expected_id": "bixby://masked/act/0036"},
-  {"query": "find and delete large unused files", "expected_id": "bixby://masked/act/0038"},
-  {"query": "review and manage app permissions", "expected_id": "bixby://masked/act/0040"}
+  {
+    "query": "how do I plays sounds when locking and unlocking the screen, providing audible confirmation of screen lock state",
+    "expected_id": "bixby://masked/act/152b4c3b53",
+    "catalog_id": "DL-0212",
+    "message": "Disable Screen lock/unlock"
+  },
+  {
+    "query": "shows a dual clock on the lock screen with home and roaming time when traveling",
+    "expected_id": "bixby://masked/act/44d96290cd",
+    "catalog_id": "DL-0098",
+    "message": "Enable Roaming clock"
+  },
+  {
+    "query": "how do I switches between sound, vibration, and mute modes to control how your device alerts you",
+    "expected_id": "bixby://masked/act/fb40538e6b",
+    "catalog_id": "DL-0260",
+    "message": "Adjust Volume"
+  },
+  {
+    "query": "how do I shows a floating Air command icon for quick access to S Pen features",
+    "expected_id": "bixby://masked/act/3cf3069842",
+    "catalog_id": "DL-0432",
+    "message": "Disable Show Air command icon"
+  },
+  {
+    "query": "I want to automatically syncs personal account data to keep your information up to date across devices",
+    "expected_id": "bixby://masked/act/60362a7235",
+    "catalog_id": "DL-0026",
+    "message": "Enable Auto-Sync"
+  },
+  {
+    "query": "how do I assigns an action to the bottom left screen corner for quick access to a feature",
+    "expected_id": "bixby://masked/act/107057f488",
+    "catalog_id": "DL-0046",
+    "message": "View Bottom left"
+  },
+  {
+    "query": "lets you wake the TV with your voice for hands-free activation",
+    "expected_id": "bixby://masked/act/a29065f74d",
+    "catalog_id": "DL-0567",
+    "message": "Enable Voice Wake-up"
+  },
+  {
+    "query": "how do I automatically deletes screenshots after sharing to save storage space",
+    "expected_id": "bixby://masked/act/8928d95ac3",
+    "catalog_id": "DL-0361",
+    "message": "Disable Delete after sharing"
+  },
+  {
+    "query": "I want to provides vibration feedback during charging to confirm the device is properly connected to power",
+    "expected_id": "bixby://masked/act/4a06b23e5f",
+    "catalog_id": "DL-0059",
+    "message": "Enable Charging"
+  },
+  {
+    "query": "how do I displays battery information in the background for continuous monitoring of battery status",
+    "expected_id": "bixby://masked/act/be0a067b61",
+    "catalog_id": "DL-0241",
+    "message": "Disable Background Limit"
+  },
+  {
+    "query": "I want to shows alternative characters on keys for quick access to symbols and accents",
+    "expected_id": "bixby://masked/act/ad222a5f5d",
+    "catalog_id": "DL-0386",
+    "message": "View Alternative characters"
+  },
+  {
+    "query": "need to adjusts the volume for Bixby voice responses to control the assistant's speaking volume",
+    "expected_id": "bixby://masked/act/1a0059a935",
+    "catalog_id": "DL-0037",
+    "message": "Increase Bixby Volume"
+  },
+  {
+    "query": "controls how much punctuation TalkBack reads aloud, from none to all, for your preference",
+    "expected_id": "bixby://masked/act/d0c62fabfb",
+    "catalog_id": "DL-0339",
+    "message": "View Speak punctuation and symbols"
+  },
+  {
+    "query": "I want to sets whether scrolling moves content or the view, matching your preferred scrolling direction",
+    "expected_id": "bixby://masked/act/40dc0dd3e7",
+    "catalog_id": "DL-0141",
+    "message": "View Touchpad scrolling direction"
+  },
+  {
+    "query": "how do I automatically adjusts screen brightness based on ambient light for comfortable viewing and battery savings",
+    "expected_id": "bixby://masked/act/376250ee61",
+    "catalog_id": "DL-0021",
+    "message": "Enable Adaptive Display"
+  },
+  {
+    "query": "need to provides vibration feedback when using the camera, confirming actions for users who need tactile response",
+    "expected_id": "bixby://masked/act/32e81769eb",
+    "catalog_id": "DL-0053",
+    "message": "Disable Camera Feedback"
+  },
+  {
+    "query": "I want to disables screen animations to speed up navigation and reduce motion for sensitive users",
+    "expected_id": "bixby://masked/act/595c5b0e9b",
+    "catalog_id": "DL-0286",
+    "message": "Enable Reduce animations"
+  },
+  {
+    "query": "how do I enables audio descriptions for video content, narrating on-screen actions for visually impaired users",
+    "expected_id": "bixby://masked/act/7a3cee3bdf",
+    "catalog_id": "DL-0276",
+    "message": "Disable Audio description"
+  },
+  {
+    "query": "I want to controls Bluetooth to connect wireless devices like earbuds, speakers, and smartwatches to your device",
+    "expected_id": "bixby://masked/act/6da277895b",
+    "catalog_id": "DL-0044",
+    "message": "View Bluetooth"
+  },
+  {
+    "query": "need to combines stereo channels into mono audio, helping users who hear better from one ear",
+    "expected_id": "bixby://masked/act/3e6b7d6e11",
+    "catalog_id": "DL-0162",
+    "message": "Disable Grayscale"
+  }
 ]
