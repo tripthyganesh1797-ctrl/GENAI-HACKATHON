@@ -93,6 +93,17 @@ def validate_goal_object(goal_dict: dict, topic: str = None) -> List[str]:
     # matching sees the corrected category.
     enforce_critical_safety(goal_dict)
 
+    # The safety override above can flip an action to "critical" after the
+    # extractor already placed it earlier in the list (e.g. a step whose
+    # text happens to mention "restart"), which would silently violate the
+    # "critical always last" ordering rule. Re-sort here so the *shipped*
+    # JSON is always correctly ordered, not just flagged as wrong.
+    _cat_rank = {"auto": 0, "manual": 1, "critical": 2}
+    goal_dict["actions"] = sorted(
+        goal_dict.get("actions", []),
+        key=lambda a: _cat_rank.get(a.get("category", "manual"), 1),
+    )
+
     ok, msg = check_goal_syntax(goal_dict.get("goal", ""))
     if not ok:
         errors.append(msg)

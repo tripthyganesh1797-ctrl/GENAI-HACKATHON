@@ -1,0 +1,77 @@
+[
+  {
+    "deeplink": "bixby://masked/act/0001",
+    "description": "Open navigation bar settings under Display",
+    "message": "Choose navigation type in Display settings"
+  },
+  {
+    "deeplink": "bixby://masked/act/0002",
+    "description": "Open Always-on Display toggle under Lock screen settings",
+    "message": "Turn Always-on Display on or off"
+  },
+  {
+    "deeplink": "bixby://masked/act/0003",
+    "description": "Open adaptive brightness toggle under Display settings",
+    "message": "Enable or disable adaptive brightness"
+  },
+  {
+    "deeplink": "bixby://masked/act/0004",
+    "description": "Open battery usage per app under Battery settings",
+    "message": "See which apps are draining battery"
+  },
+  {
+    "deeplink": "bixby://masked/act/0005",
+    "description": "Open background app limits under Battery settings",
+    "message": "Restrict apps from running in the background"
+  },
+  {
+    "deeplink": "bixby://masked/act/0006",
+    "description": "Open Power saving mode under Battery settings",
+    "message": "Turn Power saving mode on"
+  },
+  {
+    "deeplink": "bixby://masked/act/0007",
+    "description": "Open screen resolution settings under Display",
+    "message": "Lower screen resolution to save battery"
+  },
+  {
+    "deeplink": "bixby://masked/act/0008",
+    "description": "Open camera app storage and cache clear under Apps settings",
+    "message": "Clear Camera app cache and storage"
+  },
+  {
+    "deeplink": "bixby://masked/act/0009",
+    "description": "Open camera permissions under App permissions settings",
+    "message": "Check Camera app has required permissions"
+  },
+  {
+    "deeplink": "bixby://masked/act/0010",
+    "description": "Open Device Care performance optimizer under Battery and device care",
+    "message": "Run a full device optimization"
+  },
+  {
+    "deeplink": "bixby://masked/act/0011",
+    "description": "Open storage cleanup under Device care settings",
+    "message": "Free up storage space"
+  },
+  {
+    "deeplink": "bixby://masked/act/0012",
+    "description": "Open software update check under About phone settings",
+    "message": "Check for the latest software update"
+  },
+  {
+    "deeplink": "bixby://masked/act/0013",
+    "description": "Open factory data reset under General management settings",
+    "message": "Reset the device to factory settings"
+  },
+  {
+    "deeplink": "bixby://masked/act/0014",
+    "description": "Open gesture hint toggle under Display navigation bar settings",
+    "message": "Show or hide gesture hint lines"
+  },
+  {
+    "deeplink": "bixby://masked/act/0015",
+    "description": "Open RAM and app memory manager under Device care",
+    "message": "Manage RAM and running apps"
+  }
+]
