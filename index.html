@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Galaxy Diagnostics — Smart Guided Troubleshooting</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          void: '#0A0E17',
+          surface: '#10151F',
+          surface2: '#161C2A',
+          line: '#212838',
+          ink: '#E7ECF5',
+          inkdim: '#8890A3',
+          cyan: '#4CE0D2',
+          amber: '#FFB454',
+          red: '#FF5C6C',
+          violet: '#8B7CFF',
+        },
+        fontFamily: {
+          display: ['Space Grotesk', 'sans-serif'],
+          mono: ['JetBrains Mono', 'monospace'],
+          body: ['Inter', 'sans-serif'],
+        }
+      }
+    }
+  }
+</script>
+<style>
+  @keyframes scan { 0% { transform: translateY(-100%); } 100% { transform: translateY(220%); } }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  .cursor-blink { animation: blink 1s step-end infinite; }
+  .scan-line { animation: scan 1.6s linear infinite; }
+  .fade-up { animation: fadeUp 0.3s ease both; }
+  @media (prefers-reduced-motion: reduce) {
+    .cursor-blink, .scan-line, .fade-up { animation: none; }
+  }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: #0A0E17; }
+  ::-webkit-scrollbar-thumb { background: #212838; border-radius: 4px; }
+  .grid-bg {
+    background-image: linear-gradient(#151b28 1px, transparent 1px), linear-gradient(90deg, #151b28 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+</style>
+</head>
+<body class="bg-void text-ink font-body min-h-screen grid-bg">
+
+<div class="max-w-7xl mx-auto px-5 py-6 lg:px-8 lg:py-8">
+
+  <!-- HEADER -->
+  <header class="flex items-center justify-between mb-6">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 rounded bg-violet/15 border border-violet/40 flex items-center justify-center">
+        <span class="w-2.5 h-2.5 rounded-full bg-violet"></span>
+      </div>
+      <div>
+        <h1 class="font-display font-bold text-lg text-white leading-tight">Galaxy Diagnostics</h1>
+        <p class="text-inkdim text-xs font-mono">smart guided troubleshooting engine</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <div class="hidden sm:flex items-center gap-1.5 border border-line rounded-full px-3 py-1.5">
+        <span id="statusDot" class="w-1.5 h-1.5 rounded-full bg-cyan"></span>
+        <span id="apiStatusText" class="text-xs font-mono text-cyan">ONLINE</span>
+      </div>
+      <button id="telemetryToggle" class="text-xs font-mono border border-line hover:border-violet/60 text-inkdim hover:text-ink px-3 py-1.5 rounded-full transition-colors duration-150">
+        telemetry ▾
+      </button>
+    </div>
+  </header>
+
+  <div class="grid lg:grid-cols-[340px_1fr] gap-5">
+
+    <!-- LEFT: DIAGNOSTIC CONSOLE -->
+    <aside class="bg-surface border border-line rounded-2xl p-5 h-fit lg:sticky lg:top-6">
+      <div class="flex items-center gap-2 mb-4">
+        <span class="w-2 h-2 rounded-full bg-red/70"></span>
+        <span class="w-2 h-2 rounded-full bg-amber/70"></span>
+        <span class="w-2 h-2 rounded-full bg-cyan/70"></span>
+        <span class="text-inkdim text-[11px] font-mono ml-1">diagnostic_input.sh</span>
+      </div>
+
+      <label class="block text-inkdim text-xs font-mono mb-2">$ describe_complaint</label>
+      <textarea id="complaintInput" rows="3"
+        placeholder="my camera app crashes and battery dies fast"
+        class="w-full bg-void border border-line rounded-lg px-3 py-2.5 text-sm text-ink placeholder-inkdim/50 font-mono focus:outline-none focus:border-violet/60 focus:ring-1 focus:ring-violet/40 resize-none transition-colors duration-150"></textarea>
+
+      <button id="diagnoseBtn"
+        class="w-full mt-3 bg-violet hover:bg-violet/85 text-white font-display font-semibold text-sm py-2.5 rounded-lg transition-colors duration-150 flex items-center justify-center gap-2">
+        <span>Run Diagnosis</span>
+        <span class="cursor-blink">▮</span>
+      </button>
+
+      <div class="mt-5 pt-4 border-t border-line">
+        <p class="text-inkdim text-[11px] font-mono mb-2.5">quick_tests —</p>
+        <div class="space-y-1.5">
+          <button class="preset-btn w-full text-left text-xs font-mono text-inkdim hover:text-cyan border border-line hover:border-cyan/40 rounded-md px-3 py-2 transition-colors duration-150" data-q="camera app keeps crashing">
+            → camera_crash
+          </button>
+          <button class="preset-btn w-full text-left text-xs font-mono text-inkdim hover:text-cyan border border-line hover:border-cyan/40 rounded-md px-3 py-2 transition-colors duration-150" data-q="display flickers and touch gestures not working">
+            → display_gesture_fault
+          </button>
+          <button class="preset-btn w-full text-left text-xs font-mono text-inkdim hover:text-cyan border border-line hover:border-cyan/40 rounded-md px-3 py-2 transition-colors duration-150" data-q="phone bahuth garam ho rha hai restart ke baad bhi">
+            → thermal_hinglish
+          </button>
+          <button class="preset-btn w-full text-left text-xs font-mono text-inkdim hover:text-cyan border border-line hover:border-cyan/40 rounded-md px-3 py-2 transition-colors duration-150" data-q="battery drains fast and camera lags on open">
+            → multi_issue_battery_camera
+          </button>
+          <button class="preset-btn w-full text-left text-xs font-mono text-inkdim hover:text-amber hover:border-amber/40 border border-line rounded-md px-3 py-2 transition-colors duration-150" data-q="how to cook pasta at home">
+            → out_of_scope_fallback
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- RIGHT: VITALS + RESULT -->
+    <main>
+      <!-- VITALS STRIP -->
+      <div class="bg-surface border border-line rounded-2xl px-5 py-4 mb-5 grid grid-cols-2 sm:grid-cols-5 gap-x-4 gap-y-3">
+        <div class="border-l-2 border-line pl-3" id="vitalLatencyWrap">
+          <div class="text-inkdim text-[10px] font-mono uppercase tracking-wider">latency</div>
+          <div id="metricLatency" class="text-ink font-mono font-semibold text-base">—</div>
+        </div>
+        <div class="border-l-2 border-line pl-3" id="vitalCacheWrap">
+          <div class="text-inkdim text-[10px] font-mono uppercase tracking-wider">cache</div>
+          <div id="metricCache" class="text-ink font-mono font-semibold text-base">—</div>
+        </div>
+        <div class="border-l-2 border-line pl-3">
+          <div class="text-inkdim text-[10px] font-mono uppercase tracking-wider">tokens</div>
+          <div id="metricTokens" class="text-ink font-mono font-semibold text-base">—</div>
+        </div>
+        <div class="border-l-2 border-line pl-3">
+          <div class="text-inkdim text-[10px] font-mono uppercase tracking-wider">cost</div>
+          <div id="metricCost" class="text-ink font-mono font-semibold text-base">—</div>
+        </div>
+        <div class="border-l-2 border-line pl-3" id="vitalSchemaWrap">
+          <div class="text-inkdim text-[10px] font-mono uppercase tracking-wider">schema</div>
+          <div id="metricSchema" class="text-ink font-mono font-semibold text-base">—</div>
+        </div>
+      </div>
+
+      <!-- RESULT AREA -->
+      <div id="resultContainer">
+        <div class="bg-surface/60 border border-dashed border-line rounded-2xl py-20 text-center">
+          <p class="text-inkdim text-sm font-mono">awaiting input — run a diagnosis to see the scan</p>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- TELEMETRY DRAWER -->
+<div id="telemetryDrawer" class="fixed inset-x-0 bottom-0 translate-y-full transition-transform duration-300 ease-out z-40">
+  <div class="max-w-7xl mx-auto px-5 lg:px-8">
+    <div class="bg-surface2 border border-line border-b-0 rounded-t-2xl p-5 shadow-2xl">
+      <div class="flex items-center justify-between mb-4">
+        <p class="font-mono text-xs text-inkdim">system_telemetry ── /stats</p>
+        <button id="closeTelemetry" class="text-inkdim hover:text-ink text-xs font-mono">close ✕</button>
+      </div>
+      <div id="telemetryBody" class="grid grid-cols-2 md:grid-cols-4 gap-4 pb-2">
+        <div class="text-inkdim text-xs font-mono col-span-4">loading…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API_BASE = 'http://localhost:8000';
+
+const complaintInput = document.getElementById('complaintInput');
+const diagnoseBtn = document.getElementById('diagnoseBtn');
+const resultContainer = document.getElementById('resultContainer');
+const statusDot = document.getElementById('statusDot');
+const apiStatusText = document.getElementById('apiStatusText');
+
+document.querySelectorAll('.preset-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    complaintInput.value = btn.dataset.q;
+    runDiagnosis();
+  });
+});
+
+diagnoseBtn.addEventListener('click', runDiagnosis);
+complaintInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    runDiagnosis();
+  }
+});
+
+async function checkHealth() {
+  try {
+    const res = await fetch(`${API_BASE}/health`);
+    setApiOnline(res.ok);
+  } catch (err) {
+    setApiOnline(false);
+  }
+}
+
+function setApiOnline(isOnline) {
+  if (isOnline) {
+    statusDot.className = 'w-1.5 h-1.5 rounded-full bg-cyan';
+    apiStatusText.textContent = 'ONLINE';
+    apiStatusText.className = 'text-xs font-mono text-cyan';
+  } else {
+    statusDot.className = 'w-1.5 h-1.5 rounded-full bg-red';
+    apiStatusText.textContent = 'OFFLINE';
+    apiStatusText.className = 'text-xs font-mono text-red';
+  }
+}
+
+async function runDiagnosis() {
+  const query = complaintInput.value.trim();
+  if (!query) return;
+
+  diagnoseBtn.disabled = true;
+  diagnoseBtn.classList.add('opacity-50');
+
+  resultContainer.innerHTML = `
+    <div class="relative bg-surface border border-line rounded-2xl py-16 text-center overflow-hidden">
+      <div class="absolute left-0 right-0 h-24 bg-gradient-to-b from-violet/0 via-violet/10 to-violet/0 scan-line"></div>
+      <p class="text-violet font-mono text-sm relative">scanning — stage 0 enrichment → stage 1 extraction…</p>
+    </div>
+  `;
+  resetMetrics();
+
+  try {
+    const res = await fetch(`${API_BASE}/v1/troubleshoot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query })
+    });
+
+    setApiOnline(true);
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Server returned ${res.status}: ${errText}`);
+    }
+
+    const data = await res.json();
+    updateMetrics(data.meta || {});
+    renderContexts(data.response?.contexts || []);
+
+  } catch (err) {
+    setApiOnline(false);
+    resultContainer.innerHTML = `
+      <div class="bg-red/10 border border-red/40 rounded-2xl p-6 fade-up">
+        <p class="text-red font-display font-semibold mb-1">Connection lost</p>
+        <p class="text-red/70 text-sm">Backend unreachable at ${API_BASE}. Confirm uvicorn is running.</p>
+        <p class="text-red/50 text-xs mt-3 font-mono">${escapeHtml(err.message)}</p>
+      </div>
+    `;
+  } finally {
+    diagnoseBtn.disabled = false;
+    diagnoseBtn.classList.remove('opacity-50');
+  }
+}
+
+function resetMetrics() {
+  ['metricLatency','metricCache','metricTokens','metricCost','metricSchema'].forEach(id => {
+    const el = document.getElementById(id);
+    el.textContent = '—';
+    el.className = 'text-ink font-mono font-semibold text-base';
+  });
+}
+
+function updateMetrics(meta) {
+  const latency = meta.latency_ms ?? 0;
+  const latencyEl = document.getElementById('metricLatency');
+  latencyEl.textContent = `${latency}ms`;
+  latencyEl.className = `font-mono font-semibold text-base ${latency < 300 ? 'text-cyan' : 'text-ink'}`;
+
+  const cacheEl = document.getElementById('metricCache');
+  if (meta.cache_hit) {
+    cacheEl.textContent = 'HIT';
+    cacheEl.className = 'font-mono font-semibold text-base text-amber';
+  } else {
+    cacheEl.textContent = 'MISS';
+    cacheEl.className = 'font-mono font-semibold text-base text-inkdim';
+  }
+
+  const totalTokens = meta.total_tokens ?? ((meta.prompt_tokens || 0) + (meta.completion_tokens || 0));
+  document.getElementById('metricTokens').textContent = totalTokens;
+
+  const cost = meta.cost_usd ?? 0;
+  document.getElementById('metricCost').textContent = `$${cost.toFixed(4)}`;
+
+  const schemaEl = document.getElementById('metricSchema');
+  const errors = meta.validation_errors || [];
+  if (errors.length === 0) {
+    schemaEl.textContent = 'PASS';
+    schemaEl.className = 'font-mono font-semibold text-base text-cyan';
+  } else {
+    schemaEl.textContent = `${errors.length} ERR`;
+    schemaEl.className = 'font-mono font-semibold text-base text-red';
+  }
+}
+
+function categoryColor(category) {
+  if (category === 'auto') return { dot: 'bg-cyan', text: 'text-cyan', border: 'border-cyan/40', bg: 'bg-cyan/10' };
+  if (category === 'critical') return { dot: 'bg-red', text: 'text-red', border: 'border-red/40', bg: 'bg-red/10' };
+  return { dot: 'bg-amber', text: 'text-amber', border: 'border-amber/40', bg: 'bg-amber/10' };
+}
+
+function deeplinkSection(action) {
+  const category = action.category || 'manual';
+  const deeplink = action.stepGroups?.[0]?.actionableDeeplink;
+
+  if (category === 'critical') {
+    return `
+      <div class="mt-3 bg-red/10 border border-red/30 rounded-lg px-3 py-2.5">
+        <p class="text-red text-xs font-mono">⚠ deeplink nullified — destructive step requires manual confirmation</p>
+      </div>
+    `;
+  }
+  if (category === 'auto' && deeplink) {
+    return `
+      <div class="mt-3 bg-void border border-line rounded-lg px-3 py-2.5">
+        <p class="text-cyan text-xs font-mono break-all">↳ ${escapeHtml(deeplink.deeplink || '')}</p>
+        <p class="text-inkdim text-xs mt-1">${escapeHtml(deeplink.message || deeplink.description || '')}</p>
+      </div>
+    `;
+  }
+  return `<div class="mt-3"><span class="text-inkdim text-xs font-mono">no deeplink — physical action required</span></div>`;
+}
+
+function radialGauge(pct) {
+  const r = 30;
+  const circumference = 2 * Math.PI * r;
+  const offset = circumference - (pct / 100) * circumference;
+  return `
+    <svg width="76" height="76" viewBox="0 0 76 76" class="-rotate-90 flex-shrink-0">
+      <circle cx="38" cy="38" r="${r}" fill="none" stroke="#212838" stroke-width="6"/>
+      <circle cx="38" cy="38" r="${r}" fill="none" stroke="#8B7CFF" stroke-width="6"
+        stroke-dasharray="${circumference}" stroke-dashoffset="${offset}" stroke-linecap="round"/>
+    </svg>
+  `;
+}
+
+function renderContexts(contexts) {
+  if (!contexts || contexts.length === 0) {
+    resultContainer.innerHTML = `
+      <div class="bg-surface border border-line rounded-2xl p-10 text-center fade-up">
+        <p class="text-ink font-display font-semibold mb-1">No match in the diagnostic catalog</p>
+        <p class="text-inkdim text-sm">This doesn't map to a known Galaxy fix. Try describing the symptom more specifically.</p>
+      </div>
+    `;
+    return;
+  }
+
+  resultContainer.innerHTML = contexts.map(goal => {
+    const scorePct = Math.round((goal.score || 0) * 100);
+    const actions = goal.actions || [];
+
+    const timelineHtml = actions.map((action, i) => {
+      const c = categoryColor(action.category);
+      const steps = (action.stepGroups || []).flatMap(sg => sg.steps || []);
+      const isLast = i === actions.length - 1;
+
+      return `
+        <div class="relative pl-9 ${isLast ? '' : 'pb-6'}">
+          ${!isLast ? `<div class="absolute left-[7px] top-4 bottom-0 w-px bg-line"></div>` : ''}
+          <div class="absolute left-0 top-1 w-4 h-4 rounded-full ${c.bg} border-2 ${c.border} flex items-center justify-center">
+            <span class="w-1.5 h-1.5 rounded-full ${c.dot}"></span>
+          </div>
+          <div class="bg-surface border border-line rounded-xl px-4 py-3.5">
+            <div class="flex items-start justify-between gap-3 mb-1.5">
+              <h3 class="font-display font-semibold text-sm text-ink">${escapeHtml(action.actionName || '')}</h3>
+              <span class="text-[10px] font-mono uppercase tracking-wider ${c.text} flex-shrink-0 pt-0.5">${escapeHtml(action.category || 'manual')}</span>
+            </div>
+            <p class="text-inkdim text-xs mb-2.5">${escapeHtml(action.description || '')}</p>
+            <ol class="space-y-1">
+              ${steps.map(s => `<li class="text-ink/80 text-xs font-mono">· ${escapeHtml(s)}</li>`).join('')}
+            </ol>
+            ${deeplinkSection(action)}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="bg-surface/40 border border-line rounded-2xl p-5 mb-5 fade-up">
+        <div class="flex items-center gap-4 mb-6">
+          ${radialGauge(scorePct)}
+          <div class="-ml-16 pl-16">
+            <p class="text-violet font-mono text-xs mb-1">${scorePct}% confidence</p>
+            <h2 class="font-display font-bold text-lg text-white leading-snug">${escapeHtml(goal.goal || goal.title || 'Diagnosis')}</h2>
+          </div>
+        </div>
+        <div>${timelineHtml}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+// Telemetry drawer
+const telemetryToggle = document.getElementById('telemetryToggle');
+const telemetryDrawer = document.getElementById('telemetryDrawer');
+const telemetryBody = document.getElementById('telemetryBody');
+const closeTelemetry = document.getElementById('closeTelemetry');
+let drawerOpen = false;
+
+telemetryToggle.addEventListener('click', async () => {
+  drawerOpen = !drawerOpen;
+  telemetryDrawer.classList.toggle('translate-y-full', !drawerOpen);
+  if (drawerOpen) await loadTelemetry();
+});
+
+closeTelemetry.addEventListener('click', () => {
+  drawerOpen = false;
+  telemetryDrawer.classList.add('translate-y-full');
+});
+
+async function loadTelemetry() {
+  telemetryBody.innerHTML = `<div class="text-inkdim text-xs font-mono col-span-4">loading…</div>`;
+  try {
+    const res = await fetch(`${API_BASE}/stats`);
+    if (!res.ok) throw new Error(`Server returned ${res.status}`);
+    const s = await res.json();
+    const cacheRatePct = Math.round((s.cache_hit_rate || 0) * 100);
+
+    telemetryBody.innerHTML = `
+      <div><div class="text-inkdim text-[10px] font-mono uppercase tracking-wider">requests</div><div class="text-ink font-mono font-semibold text-lg">${s.total_requests ?? 0}</div></div>
+      <div><div class="text-inkdim text-[10px] font-mono uppercase tracking-wider">cache hit rate</div><div class="text-amber font-mono font-semibold text-lg">${cacheRatePct}%</div></div>
+      <div><div class="text-inkdim text-[10px] font-mono uppercase tracking-wider">p95 latency</div><div class="text-cyan font-mono font-semibold text-lg">${s.p95_latency_ms ?? 0}ms</div></div>
+      <div><div class="text-inkdim text-[10px] font-mono uppercase tracking-wider">total cost</div><div class="text-ink font-mono font-semibold text-lg">$${(s.total_cost_usd ?? 0).toFixed(4)}</div></div>
+    `;
+  } catch (err) {
+    telemetryBody.innerHTML = `<div class="text-red text-xs font-mono col-span-4">couldn't reach ${API_BASE}/stats</div>`;
+  }
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str ?? '';
+  return div.innerHTML;
+}
+
+checkHealth();
+</script>
+
+</body>
+</html>

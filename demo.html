@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Troubleshooting Engine — Live Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0F1420;
+    --panel: #161D2E;
+    --panel-border: #232B40;
+    --accent: #4C8DFF;
+    --accent-dim: #2C4A8C;
+    --auto: #3ADBC4;
+    --manual: #F5A623;
+    --critical: #FF6B6B;
+    --text: #E8ECF4;
+    --text-dim: #8B93A7;
+    --radius: 10px;
+  }
+
+  * { box-sizing: border-box; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', -apple-system, sans-serif;
+    line-height: 1.5;
+  }
+
+  h1, h2, h3, .label {
+    font-family: 'Space Grotesk', sans-serif;
+  }
+
+  .shell {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 32px 24px 64px;
+  }
+
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 28px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  header h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+
+  header h1 span {
+    color: var(--accent);
+  }
+
+  header p {
+    color: var(--text-dim);
+    margin: 0;
+    font-size: 0.9rem;
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    gap: 20px;
+  }
+
+  @media (max-width: 880px) {
+    .layout { grid-template-columns: 1fr; }
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius);
+    padding: 20px;
+  }
+
+  .input-row {
+    display: flex;
+    gap: 10px;
+  }
+
+  textarea {
+    flex: 1;
+    background: #0B101B;
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 0.95rem;
+    padding: 14px;
+    resize: vertical;
+    min-height: 52px;
+  }
+
+  textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(76, 141, 255, 0.2);
+  }
+
+  button.primary {
+    background: var(--accent);
+    color: #061022;
+    border: none;
+    border-radius: var(--radius);
+    padding: 0 22px;
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 600;
+    font-size: 0.92rem;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+
+  button.primary:hover { background: #6DA2FF; }
+  button.primary:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+  button.primary:disabled { background: var(--accent-dim); cursor: not-allowed; }
+
+  .chips {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+  }
+
+  .chip {
+    background: transparent;
+    border: 1px solid var(--panel-border);
+    color: var(--text-dim);
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .chip:hover { border-color: var(--accent); color: var(--text); }
+
+  .result-area { margin-top: 22px; }
+
+  .pulse-loader {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--text-dim);
+    font-size: 0.9rem;
+    padding: 24px 0;
+  }
+
+  .pulse-bars {
+    display: flex;
+    gap: 3px;
+    align-items: flex-end;
+    height: 18px;
+  }
+
+  .pulse-bars span {
+    width: 3px;
+    background: var(--accent);
+    border-radius: 2px;
+    animation: pulse 1s ease-in-out infinite;
+  }
+
+  .pulse-bars span:nth-child(1) { height: 6px; animation-delay: 0s; }
+  .pulse-bars span:nth-child(2) { height: 14px; animation-delay: 0.12s; }
+  .pulse-bars span:nth-child(3) { height: 18px; animation-delay: 0.24s; }
+  .pulse-bars span:nth-child(4) { height: 10px; animation-delay: 0.36s; }
+  .pulse-bars span:nth-child(5) { height: 15px; animation-delay: 0.48s; }
+
+  @keyframes pulse {
+    0%, 100% { transform: scaleY(0.4); opacity: 0.5; }
+    50% { transform: scaleY(1); opacity: 1; }
+  }
+
+  .goal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 4px;
+    gap: 12px;
+  }
+
+  .goal-title {
+    font-size: 1.15rem;
+    font-weight: 600;
+    margin: 0;
+  }
+
+  .confidence {
+    text-align: right;
+    flex-shrink: 0;
+  }
+
+  .confidence .pct {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: 1.1rem;
+    color: var(--auto);
+  }
+
+  .confidence .bar-track {
+    width: 90px;
+    height: 4px;
+    background: var(--panel-border);
+    border-radius: 2px;
+    margin-top: 4px;
+    overflow: hidden;
+  }
+
+  .confidence .bar-fill {
+    height: 100%;
+    background: var(--auto);
+    border-radius: 2px;
+  }
+
+  .goal-sub {
+    color: var(--text-dim);
+    font-size: 0.85rem;
+    margin: 0 0 18px;
+  }
+
+  .action-card {
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+    margin-bottom: 12px;
+    background: #10162480;
+  }
+
+  .action-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 6px;
+  }
+
+  .action-name {
+    font-weight: 600;
+    font-size: 0.98rem;
+  }
+
+  .badge {
+    font-size: 0.68rem;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 999px;
+    flex-shrink: 0;
+  }
+
+  .badge.auto { background: rgba(58, 219, 196, 0.15); color: var(--auto); }
+  .badge.manual { background: rgba(245, 166, 35, 0.15); color: var(--manual); }
+  .badge.critical { background: rgba(255, 107, 107, 0.15); color: var(--critical); }
+
+  .action-desc {
+    color: var(--text-dim);
+    font-size: 0.87rem;
+    margin: 0 0 10px;
+  }
+
+  .steps {
+    margin: 0 0 12px;
+    padding-left: 18px;
+    font-size: 0.87rem;
+    color: var(--text);
+  }
+
+  .steps li { margin-bottom: 3px; }
+
+  .deeplink-btn {
+    background: transparent;
+    border: 1px solid var(--auto);
+    color: var(--auto);
+    padding: 7px 14px;
+    border-radius: 7px;
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .deeplink-btn:hover { background: rgba(58, 219, 196, 0.1); }
+
+  .manual-note {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--manual);
+    font-size: 0.82rem;
+    font-weight: 500;
+  }
+
+  .empty-state, .error-state {
+    padding: 30px 10px;
+    text-align: center;
+    color: var(--text-dim);
+  }
+
+  .empty-state strong, .error-state strong {
+    display: block;
+    color: var(--text);
+    font-size: 1rem;
+    margin-bottom: 6px;
+    font-family: 'Space Grotesk', sans-serif;
+  }
+
+  /* Stats sidebar */
+  .stats-panel h2 {
+    font-size: 0.95rem;
+    margin: 0 0 16px;
+    color: var(--text-dim);
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--panel-border);
+  }
+
+  .stat-row:last-of-type { border-bottom: none; }
+
+  .stat-label { color: var(--text-dim); font-size: 0.82rem; }
+  .stat-value {
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 700;
+    font-size: 1.05rem;
+  }
+
+  .domain-bars { margin-top: 16px; }
+  .domain-bar-row {
+    margin-bottom: 10px;
+  }
+  .domain-bar-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+  }
+  .domain-bar-track {
+    height: 6px;
+    background: #0B101B;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .domain-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+    transition: width 0.4s ease;
+  }
+
+  /* Mock phone popup */
+  .overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(6, 10, 20, 0.75);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+  }
+
+  .phone-mock {
+    width: 260px;
+    background: #0B101B;
+    border: 4px solid #2A3348;
+    border-radius: 32px;
+    padding: 18px 16px 26px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
+
+  .phone-notch {
+    width: 60px;
+    height: 6px;
+    background: #2A3348;
+    border-radius: 3px;
+    margin: 0 auto 16px;
+  }
+
+  .phone-mock h3 {
+    font-size: 0.95rem;
+    margin: 0 0 4px;
+  }
+
+  .phone-mock p {
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    margin: 0 0 18px;
+  }
+
+  .phone-toggle-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #161D2E;
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 0.82rem;
+    margin-bottom: 16px;
+  }
+
+  .fake-switch {
+    width: 34px;
+    height: 18px;
+    background: var(--accent);
+    border-radius: 999px;
+    position: relative;
+  }
+
+  .fake-switch::after {
+    content: '';
+    position: absolute;
+    right: 2px;
+    top: 2px;
+    width: 14px;
+    height: 14px;
+    background: white;
+    border-radius: 50%;
+  }
+
+  .phone-mock button {
+    width: 100%;
+    background: var(--accent);
+    color: #061022;
+    border: none;
+    border-radius: 8px;
+    padding: 10px;
+    font-family: 'Space Grotesk', sans-serif;
+    font-weight: 600;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+
+  footer {
+    margin-top: 28px;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.78rem;
+  }
+
+  footer code {
+    background: #0B101B;
+    padding: 1px 6px;
+    border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <header>
+    <h1>Troubleshoot<span>Engine</span></h1>
+    <p>Type a device complaint. Get a validated, tap-to-fix plan.</p>
+  </header>
+
+  <div class="layout">
+    <div class="panel">
+      <div class="input-row">
+        <textarea id="complaintInput" placeholder="e.g. screen flickers and the battery dies fast" rows="1"></textarea>
+        <button class="primary" id="submitBtn">Diagnose</button>
+      </div>
+      <div class="chips">
+        <button class="chip" data-q="Screen flickers and the battery dies fast">Battery + display</button>
+        <button class="chip" data-q="Camera app keeps crashing when I open it">Camera crash</button>
+        <button class="chip" data-q="My phone got slow after the update">Performance</button>
+        <button class="chip" data-q="My phone screen turned into a pineapple emoji randomly">Nonsense (no-match test)</button>
+      </div>
+
+      <div class="result-area" id="resultArea"></div>
+    </div>
+
+    <div class="panel stats-panel">
+      <h2>Live system stats</h2>
+      <div id="statsBody">
+        <div class="stat-row"><span class="stat-label">Total requests</span><span class="stat-value" id="statTotal">—</span></div>
+        <div class="stat-row"><span class="stat-label">Avg latency</span><span class="stat-value" id="statLatency">—</span></div>
+        <div class="stat-row"><span class="stat-label">Cache hit rate</span><span class="stat-value" id="statCache">—</span></div>
+        <div class="stat-row"><span class="stat-label">No-match rate</span><span class="stat-value" id="statNoMatch">—</span></div>
+        <div class="stat-row"><span class="stat-label">Total tokens</span><span class="stat-value" id="statTokens">—</span></div>
+        <div class="stat-row"><span class="stat-label">Total cost</span><span class="stat-value" id="statCost">—</span></div>
+      </div>
+      <div class="domain-bars" id="domainBars"></div>
+    </div>
+  </div>
+
+  <footer>Backend: <code id="apiBase">http://localhost:8000</code> — make sure your server is running</footer>
+</div>
+
+<script>
+const API_BASE = 'http://localhost:8000';
+document.getElementById('apiBase').textContent = API_BASE;
+
+const input = document.getElementById('complaintInput');
+const submitBtn = document.getElementById('submitBtn');
+const resultArea = document.getElementById('resultArea');
+
+document.querySelectorAll('.chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    input.value = chip.dataset.q;
+    runDiagnosis();
+  });
+});
+
+submitBtn.addEventListener('click', runDiagnosis);
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    runDiagnosis();
+  }
+});
+
+function badgeClass(category) {
+  if (category === 'auto') return 'auto';
+  if (category === 'critical') return 'critical';
+  return 'manual';
+}
+
+function badgeLabel(category) {
+  if (category === 'auto') return 'One-tap fix';
+  if (category === 'critical') return 'Do manually';
+  return 'Manual step';
+}
+
+async function runDiagnosis() {
+  const query = input.value.trim();
+  if (!query) return;
+
+  submitBtn.disabled = true;
+  resultArea.innerHTML = `
+    <div class="pulse-loader">
+      <div class="pulse-bars"><span></span><span></span><span></span><span></span><span></span></div>
+      Reading the complaint and matching it to known fixes…
+    </div>
+  `;
+
+  try {
+    const res = await fetch(`${API_BASE}/v1/troubleshoot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query })
+    });
+
+    if (!res.ok) throw new Error(`Server responded with ${res.status}`);
+    const data = await res.json();
+    renderResult(data);
+  } catch (err) {
+    resultArea.innerHTML = `
+      <div class="error-state">
+        <strong>Couldn't reach the engine</strong>
+        Check that your FastAPI server is running on ${API_BASE}.<br>
+        <span style="font-size:0.78rem">${err.message}</span>
+      </div>
+    `;
+  } finally {
+    submitBtn.disabled = false;
+    refreshStats();
+  }
+}
+
+function renderResult(data) {
+  const contexts = data.response?.contexts || [];
+
+  if (contexts.length === 0) {
+    resultArea.innerHTML = `
+      <div class="empty-state">
+        <strong>No matching fix found</strong>
+        We couldn't confidently match this to a known issue. Try describing what's happening in a bit more detail.
+      </div>
+    `;
+    return;
+  }
+
+  const goal = contexts[0];
+  const pct = Math.round((goal.score || 0) * 100);
+
+  const actionsHtml = goal.actions.map(action => {
+    const cat = action.category || 'manual';
+    const steps = action.stepGroups.flatMap(sg => sg.steps);
+    const deeplink = action.stepGroups[0]?.actionableDeeplink;
+
+    const stepsHtml = steps.map(s => `<li>${escapeHtml(s)}</li>`).join('');
+
+    let actionBtn = '';
+    if (cat === 'critical') {
+      actionBtn = `<div class="manual-note">⚠ Disruptive step — do this yourself when ready</div>`;
+    } else if (deeplink) {
+      actionBtn = `<button class="deeplink-btn" onclick='openPhoneMock(${JSON.stringify(JSON.stringify(deeplink))})'>Open in Settings →</button>`;
+    }
+
+    return `
+      <div class="action-card">
+        <div class="action-top">
+          <span class="action-name">${escapeHtml(action.actionName)}</span>
+          <span class="badge ${badgeClass(cat)}">${badgeLabel(cat)}</span>
+        </div>
+        <p class="action-desc">${escapeHtml(action.description)}</p>
+        <ol class="steps">${stepsHtml}</ol>
+        ${actionBtn}
+      </div>
+    `;
+  }).join('');
+
+  resultArea.innerHTML = `
+    <div class="goal-header">
+      <h2 class="goal-title">${escapeHtml(goal.title)}</h2>
+      <div class="confidence">
+        <div class="pct">${pct}%</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
+      </div>
+    </div>
+    <p class="goal-sub">${goal.actions.length} step${goal.actions.length > 1 ? 's' : ''} · ordered from safest to most disruptive</p>
+    ${actionsHtml}
+  `;
+}
+
+function openPhoneMock(deeplinkJsonStr) {
+  const deeplink = JSON.parse(deeplinkJsonStr);
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay';
+  overlay.innerHTML = `
+    <div class="phone-mock">
+      <div class="phone-notch"></div>
+      <h3>${escapeHtml(deeplink.description || 'Settings')}</h3>
+      <p>${escapeHtml(deeplink.message || '')}</p>
+      <div class="phone-toggle-row">
+        <span>Enabled</span>
+        <div class="fake-switch"></div>
+      </div>
+      <button id="closeMock">Done</button>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#closeMock').addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+async function refreshStats() {
+  try {
+    const res = await fetch(`${API_BASE}/stats`);
+    const s = await res.json();
+    document.getElementById('statTotal').textContent = s.total_requests;
+    document.getElementById('statLatency').textContent = s.avg_latency_ms ? `${s.avg_latency_ms} ms` : '—';
+    document.getElementById('statCache').textContent = `${Math.round((s.cache_hit_rate || 0) * 100)}%`;
+    document.getElementById('statNoMatch').textContent = `${Math.round((s.no_match_rate || 0) * 100)}%`;
+    document.getElementById('statTokens').textContent = s.total_tokens;
+    document.getElementById('statCost').textContent = `$${s.total_cost_usd}`;
+
+    const domainBars = document.getElementById('domainBars');
+    const domains = s.requests_by_domain || {};
+    const max = Math.max(1, ...Object.values(domains));
+    domainBars.innerHTML = Object.entries(domains).map(([name, count]) => `
+      <div class="domain-bar-row">
+        <div class="domain-bar-label"><span>${escapeHtml(name)}</span><span>${count}</span></div>
+        <div class="domain-bar-track"><div class="domain-bar-fill" style="width:${(count / max) * 100}%"></div></div>
+      </div>
+    `).join('');
+  } catch (err) {
+    // stats are a nice-to-have; fail silently if the server isn't up yet
+  }
+}
+
+refreshStats();
+setInterval(refreshStats, 5000);
+</script>
+
+</body>
+</html>

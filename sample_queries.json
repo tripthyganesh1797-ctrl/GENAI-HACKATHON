@@ -1,0 +1,13 @@
+[
+  {"domain": "Display", "complaint": "Screen flickers and the battery dies fast"},
+  {"domain": "Display", "complaint": "My phone swipe gestures go the wrong direction after installing an app"},
+  {"domain": "Battery", "complaint": "Battery drains super quick even when I'm not using the phone much"},
+  {"domain": "Battery", "complaint": "battery draining so fast idk why, its so annoying"},
+  {"domain": "Camera", "complaint": "Camera app keeps crashing when I try to take a photo"},
+  {"domain": "Camera", "complaint": "camera says permission denied even though I allowed it"},
+  {"domain": "Performance", "complaint": "My phone got slow after the update"},
+  {"domain": "Performance", "complaint": "Apps take forever to open and the phone lags a lot"},
+  {"domain": "Multi-issue", "complaint": "battery dies fast and camera also lags when opening"},
+  {"domain": "No-match", "complaint": "My phone screen turned into a pineapple emoji randomly"},
+  {"domain": "Typo/Hinglish", "complaint": "fone ki battery jaldi khatam ho rha hai aur screen b flicker kr rha h"}
+]

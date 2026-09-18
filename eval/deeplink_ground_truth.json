@@ -1,0 +1,22 @@
+[
+  {"query": "battery usage per app draining", "expected_id": "bixby://masked/act/0004"},
+  {"query": "turn on power saving mode", "expected_id": "bixby://masked/act/0006"},
+  {"query": "lower screen resolution to save battery", "expected_id": "bixby://masked/act/0007"},
+  {"query": "clear camera app cache and storage", "expected_id": "bixby://masked/act/0008"},
+  {"query": "check camera app permissions enabled", "expected_id": "bixby://masked/act/0009"},
+  {"query": "run device care performance optimizer", "expected_id": "bixby://masked/act/0010"},
+  {"query": "free up storage space general cleanup", "expected_id": "bixby://masked/act/0011"},
+  {"query": "check for latest software update", "expected_id": "bixby://masked/act/0012"},
+  {"query": "adaptive battery learn app usage", "expected_id": "bixby://masked/act/0016"},
+  {"query": "show battery percentage in status bar", "expected_id": "bixby://masked/act/0017"},
+  {"query": "turn dark mode on or off", "expected_id": "bixby://masked/act/0021"},
+  {"query": "change screen timeout duration", "expected_id": "bixby://masked/act/0022"},
+  {"query": "adjust font size and screen zoom", "expected_id": "bixby://masked/act/0023"},
+  {"query": "reduce blue light eye comfort", "expected_id": "bixby://masked/act/0027"},
+  {"query": "change photo and video resolution quality", "expected_id": "bixby://masked/act/0028"},
+  {"query": "reset camera shooting modes to default", "expected_id": "bixby://masked/act/0029"},
+  {"query": "free up RAM close background apps", "expected_id": "bixby://masked/act/0033"},
+  {"query": "clear cache for all apps at once", "expected_id": "bixby://masked/act/0036"},
+  {"query": "find and delete large unused files", "expected_id": "bixby://masked/act/0038"},
+  {"query": "review and manage app permissions", "expected_id": "bixby://masked/act/0040"}
+]
