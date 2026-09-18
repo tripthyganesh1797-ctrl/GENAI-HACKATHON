@@ -4,3 +4,13 @@ pydantic
 python-dotenv
 anthropic
 openai
+rank_bm25
+rapidfuzz
+scikit-learn
+numpy
+# Optional: enables real dense embeddings in deeplink_matching.py's hybrid
+# matcher. If this package or its model weights can't be fetched (e.g. no
+# network access to huggingface.co), the matcher automatically and
+# silently falls back to an offline TF-IDF/SVD dense representation --
+# safe to leave commented out for a minimal/offline-only install.
+# sentence-transformers

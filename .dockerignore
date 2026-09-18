@@ -1,0 +1,11 @@
+.git
+.env
+venv/
+__pycache__/
+*.pyc
+cache_store.json
+request_log.jsonl
+official_theme2_data/
+deeplinks_placeholder_backup.json
+deeplinks_expanded_placeholder_backup.json
+eval/ablation_results.json
