@@ -7,6 +7,11 @@ cache_store.json
 request_log.jsonl
 feedback_log.jsonl
 feedback_scores.json
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+pytest.ini
 official_theme2_data/
 deeplinks_placeholder_backup.json
 deeplinks_expanded_placeholder_backup.json

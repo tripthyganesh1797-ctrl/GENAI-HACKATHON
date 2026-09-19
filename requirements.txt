@@ -14,3 +14,8 @@ numpy
 # silently falls back to an offline TF-IDF/SVD dense representation --
 # safe to leave commented out for a minimal/offline-only install.
 # sentence-transformers
+
+# --- dev / test only (not needed to run the service itself) ---
+pytest
+pytest-cov
+httpx

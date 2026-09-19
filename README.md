@@ -55,7 +55,35 @@ curl -X POST http://localhost:8000/v1/troubleshoot \
 
 curl http://localhost:8000/health
 curl http://localhost:8000/stats
+
+# Live stage-by-stage progress (Server-Sent Events) -- what index.html's UI consumes:
+curl -N "http://localhost:8000/v1/troubleshoot/stream?query=screen+flickers+and+battery+dies+fast"
+
+# Thumbs up/down on a specific matched deeplink (drives adaptive re-ranking, see feedback.py):
+curl -X POST http://localhost:8000/v1/feedback \
+  -H "Content-Type: application/json" \
+  -d '{"deeplink": "bixby://masked/act/...", "action_name": "Battery Settings", "helpful": true}'
 ```
+
+## Run the tests
+
+```bash
+pip install -r requirements.txt   # includes pytest / httpx (dev-only, see bottom of the file)
+pytest                             # 86 tests, ~90% line coverage, runs in ~10s, no LLM key needed
+pytest --cov=. --cov-report=term-missing   # optional, needs pytest-cov (already in requirements.txt)
+```
+
+Covers the data contract (`test_validators.py`, `test_schema.py`), the
+zero-API-key offline path end-to-end against the real 20 official queries
+(`test_offline_fallback.py`), retrieval against the real 578-entry catalog
+plus the feedback-driven re-ranking (`test_deeplink_matching.py`,
+`test_feedback.py`), the cache and stats logging (`test_cache.py`,
+`test_request_log.py`), the full orchestration including a byte-for-byte
+parity check between the streaming and non-streaming pipelines
+(`test_pipeline.py`), and the live FastAPI service itself via `TestClient`
+(`test_main.py`) — including the SSE endpoint. All isolated from your real
+`cache_store.json` / `request_log.jsonl` / `feedback_*` files (see
+`tests/conftest.py`).
 
 ## Run with Docker
 
@@ -98,6 +126,8 @@ simpler, earlier version of the same UI kept for reference.
 | `eval/eval_harness.py` | Runs the full pipeline against the 20 real queries, produces `eval/metrics.md` |
 | `eval/run_ablation.py` + `eval/matchers.py` | 3-variant deeplink-matching ablation (Full-LLM / Hybrid BM25+dense / Pure rules) against `eval/deeplink_ground_truth.json` (real catalog entries) |
 | `request_log.py` | Per-request JSONL log, powers `/stats` |
+| `feedback.py` | Human-in-the-loop feedback (`POST /v1/feedback`) + the bounded per-deeplink score adjustment that `deeplink_matching.py` consults on every search |
+| `tests/` | pytest suite, ~90% line coverage, zero LLM key required — see "Run the tests" above |
 
 ## Submission checklist (per Hackathon_Guidelines.pdf)
 

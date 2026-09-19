@@ -9,6 +9,7 @@ Then test with:
 """
 
 import json
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,13 +21,11 @@ from request_log import compute_stats
 from deeplink_matching import get_index, DUMMY_POSITIVE_DEEPLINK
 import feedback as feedback_module
 
-app = FastAPI(title="Smart Guided Troubleshooting Engine", version="0.1.0")
-
 _startup_info = {}
 
 
-@app.on_event("startup")
-def _warm_up():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """Builds the BM25/embedding index once at process startup instead of
     on a user's first request -- the index build (and, if
     sentence-transformers + network are available, the embedding model
@@ -36,6 +35,10 @@ def _warm_up():
     _startup_info["deeplink_variant"] = type(index).__name__
     _startup_info["dense_kind"] = getattr(index, "dense_kind", "n/a (rules-based)")
     _startup_info["llm_available"] = llm_available()
+    yield
+
+
+app = FastAPI(title="Smart Guided Troubleshooting Engine", version="0.1.0", lifespan=lifespan)
 
 # Allow the demo webpage (opened as a local file or on a different port) to
 # call this API. Fine for a hackathon demo; would be scoped down in production.
