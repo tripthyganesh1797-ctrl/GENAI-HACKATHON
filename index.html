@@ -42,6 +42,8 @@
   @media (prefers-reduced-motion: reduce) {
     .cursor-blink, .scan-line, .fade-up { animation: none; }
   }
+  summary::-webkit-details-marker { display: none; }
+  summary::marker { content: ""; }
   ::-webkit-scrollbar { width: 8px; height: 8px; }
   ::-webkit-scrollbar-track { background: #0A0E17; }
   ::-webkit-scrollbar-thumb { background: #212838; border-radius: 4px; }
@@ -114,6 +116,30 @@
         </button>
       </div>
       <p id="micStatus" class="text-[10px] font-mono text-inkdim mt-1 h-3"></p>
+
+      <details class="mt-3 group">
+        <summary class="text-[11px] font-mono text-inkdim hover:text-cyan cursor-pointer select-none list-none flex items-center gap-1.5">
+          <span class="inline-block transition-transform duration-150 group-open:rotate-90">&gt;</span>
+          device state (optional) — lets the plan react to real signals
+        </summary>
+        <div class="grid grid-cols-2 gap-2 mt-2.5">
+          <label class="block">
+            <span class="text-inkdim text-[10px] font-mono block mb-1">battery %</span>
+            <input id="deviceBatteryPct" type="number" min="0" max="100" placeholder="e.g. 6"
+              class="w-full bg-void border border-line rounded-md px-2 py-1.5 text-xs text-ink font-mono placeholder-inkdim/40 focus:outline-none focus:border-violet/60">
+          </label>
+          <label class="block">
+            <span class="text-inkdim text-[10px] font-mono block mb-1">storage free %</span>
+            <input id="deviceStoragePct" type="number" min="0" max="100" placeholder="e.g. 3"
+              class="w-full bg-void border border-line rounded-md px-2 py-1.5 text-xs text-ink font-mono placeholder-inkdim/40 focus:outline-none focus:border-violet/60">
+          </label>
+          <label class="block col-span-2">
+            <span class="text-inkdim text-[10px] font-mono block mb-1">hours since last restart</span>
+            <input id="deviceUptimeHours" type="number" min="0" placeholder="e.g. 72"
+              class="w-full bg-void border border-line rounded-md px-2 py-1.5 text-xs text-ink font-mono placeholder-inkdim/40 focus:outline-none focus:border-violet/60">
+          </label>
+        </div>
+      </details>
 
       <button id="diagnoseBtn"
         class="w-full mt-3 bg-violet hover:bg-violet/85 text-white font-display font-semibold text-sm py-2.5 rounded-lg transition-colors duration-150 flex items-center justify-center gap-2">
@@ -394,6 +420,24 @@ function setApiOnline(isOnline) {
   }
 }
 
+// Task 35: reads the optional "device state" panel into a plain object,
+// dropping any field the user left blank -- undefined fields are omitted
+// entirely (not sent as null) so schema.DeviceContext's all-optional
+// contract is exercised the same way a minimal curl/CLI caller would.
+function deviceContextFromInputs() {
+  const battery_pct = document.getElementById('deviceBatteryPct').value;
+  const storage_free_pct = document.getElementById('deviceStoragePct').value;
+  const uptime_hours = document.getElementById('deviceUptimeHours').value;
+  const device = {};
+  if (battery_pct !== '') device.battery_pct = Number(battery_pct);
+  if (storage_free_pct !== '') device.storage_free_pct = Number(storage_free_pct);
+  if (uptime_hours !== '') {
+    device.uptime_hours = Number(uptime_hours);
+    device.last_restart_hours_ago = Number(uptime_hours);
+  }
+  return Object.keys(device).length ? device : undefined;
+}
+
 async function runDiagnosis() {
   const query = complaintInput.value.trim();
   if (!query) return;
@@ -410,10 +454,11 @@ async function runDiagnosis() {
   resetMetrics();
 
   try {
+    const device = deviceContextFromInputs();
     const res = await fetch(`${API_BASE}/v1/troubleshoot`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query })
+      body: JSON.stringify(device ? { query, device } : { query })
     });
 
     setApiOnline(true);
@@ -424,7 +469,7 @@ async function runDiagnosis() {
 
     const data = await res.json();
     updateMetrics(data.meta || {});
-    renderContexts(data.response?.contexts || [], query);
+    renderContexts(data.response?.contexts || [], query, data.meta?.device_context_notes || []);
 
   } catch (err) {
     setApiOnline(false);
@@ -611,9 +656,24 @@ function radialGauge(pct) {
   `;
 }
 
-function renderContexts(contexts, query) {
+// Task 35: device_context_notes live on meta, not on any one Goal, so
+// they render ONCE above every goal card rather than inside
+// escalationBanner()'s per-goal slot -- these are facts about the device,
+// not about how confident a particular match is.
+function deviceContextNotesBanner(notes) {
+  if (!notes || notes.length === 0) return '';
+  return `
+    <div class="mb-5 bg-cyan/10 border border-cyan/40 rounded-xl px-4 py-3.5 fade-up">
+      <p class="text-cyan font-display font-semibold text-xs mb-2">&#128241; Device context applied</p>
+      ${notes.map(n => `<p class="text-inkdim text-xs mb-1 last:mb-0">${escapeHtml(n)}</p>`).join('')}
+    </div>
+  `;
+}
+
+function renderContexts(contexts, query, deviceContextNotes = []) {
   if (!contexts || contexts.length === 0) {
     resultContainer.innerHTML = `
+      ${deviceContextNotesBanner(deviceContextNotes)}
       <div class="bg-surface border border-line rounded-2xl p-10 text-center fade-up">
         <p class="text-ink font-display font-semibold mb-1">No match in the diagnostic catalog</p>
         <p class="text-inkdim text-sm">This doesn't map to a known Galaxy fix. Try describing the symptom more specifically.</p>
@@ -622,7 +682,7 @@ function renderContexts(contexts, query) {
     return;
   }
 
-  resultContainer.innerHTML = contexts.map(goal => {
+  resultContainer.innerHTML = deviceContextNotesBanner(deviceContextNotes) + contexts.map(goal => {
     const scorePct = Math.round((goal.score || 0) * 100);
     const actions = goal.actions || [];
 

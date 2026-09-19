@@ -97,9 +97,28 @@ class ContextDeeplinkResponse(BaseModel):
 
 # ---- API-level wrapper models (not in the original appendix, added for main.py) ----
 
+class DeviceContext(BaseModel):
+    """Optional, purely factual device-state signals (Task 35). Every field
+    is optional and there's no "required" combination -- when a caller
+    supplies none of this, device_signals.py's apply_device_context() is a
+    no-op and the response is byte-identical to before this feature
+    existed. When present, these numbers are used to (a) reorder same-
+    category actions within a Goal so the step most relevant to the
+    reported state runs first, and (b) add a short, honest advisory note
+    to meta.device_context_notes -- never to invent a new action or claim
+    a fix the catalog/reference text doesn't actually support. See
+    device_signals.py for the full rationale and thresholds."""
+    battery_pct: Optional[float] = Field(None, ge=0, le=100)
+    storage_free_pct: Optional[float] = Field(None, ge=0, le=100)
+    os_version: Optional[str] = None
+    uptime_hours: Optional[float] = Field(None, ge=0)
+    last_restart_hours_ago: Optional[float] = Field(None, ge=0)
+
+
 class TroubleshootRequest(BaseModel):
     query: str
     siis_response: Optional[str] = None
+    device: Optional[DeviceContext] = None
 
 
 class Meta(BaseModel):
@@ -108,6 +127,7 @@ class Meta(BaseModel):
     model: str
     cost_usd: float
     fallback: Optional[str] = None
+    device_context_notes: List[str] = []
 
 
 class TroubleshootResponse(BaseModel):
@@ -120,6 +140,7 @@ class TroubleshootResponse(BaseModel):
 class BatchTroubleshootItem(BaseModel):
     query: str
     siis_response: Optional[str] = None
+    device: Optional[DeviceContext] = None
 
 
 class BatchTroubleshootRequest(BaseModel):

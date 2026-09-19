@@ -76,7 +76,7 @@ class TestEscalation:
         and a low self-reported score must carry escalation by the time
         run_pipeline() returns -- exercised through the real function,
         not just the helper in isolation."""
-        def fake_stage1(technical_query, siis_response, force_offline=False):
+        def fake_stage1(technical_query, siis_response, force_offline=False, device=None):
             goal = {
                 "goal": "Follow these steps to perform this Test Issue Troubleshooting",
                 "title": "Test issue",
@@ -92,7 +92,7 @@ class TestEscalation:
         assert goal["escalation"]["recommended"] is True
 
     def test_llm_path_goal_high_score_flows_through_without_escalation(self, monkeypatch):
-        def fake_stage1(technical_query, siis_response, force_offline=False):
+        def fake_stage1(technical_query, siis_response, force_offline=False, device=None):
             goal = {
                 "goal": "Follow these steps to perform this Test Issue Troubleshooting",
                 "title": "Test issue",
@@ -121,6 +121,135 @@ class TestEscalation:
             # sanity: offline scores are never LLM-scale low enough to trip
             # LLM_SCORE_ESCALATION_THRESHOLD by coincidence of the wrong gate
             assert goal["score"] >= 0.55  # offline's own floor
+
+
+class TestDeviceContext:
+    """Task 35: optional device-state signals (schema.DeviceContext), fully
+    additive on top of the existing pipeline. device_signals.py itself is
+    unit-tested directly in tests/test_device_signals.py; these exercise
+    the pipeline-level wiring: prompt formatting for the LLM path, and --
+    the trickiest part -- that device context is applied fresh on every
+    call and never leaks into (or out of) the semantic cache."""
+
+    def test_format_device_context_block_empty_for_none_or_empty(self):
+        assert pipeline._format_device_context_block(None) == ""
+        assert pipeline._format_device_context_block({}) == ""
+        assert pipeline._format_device_context_block(
+            {"battery_pct": None, "storage_free_pct": None}
+        ) == ""
+
+    def test_format_device_context_block_includes_every_set_field(self):
+        block = pipeline._format_device_context_block({
+            "battery_pct": 12, "storage_free_pct": 8, "os_version": "One UI 6.1",
+            "uptime_hours": 50, "last_restart_hours_ago": 50,
+        })
+        assert "Battery level: 12%" in block
+        assert "Free storage: 8%" in block
+        assert "OS version: One UI 6.1" in block
+        assert "Uptime since last restart: 50 hours" in block
+        assert "Hours since last restart: 50" in block
+
+    def test_stage1_extract_threads_device_into_llm_prompt(self, monkeypatch):
+        captured = {}
+
+        def fake_call_llm_json(prompt, max_tokens=4000):
+            captured["prompt"] = prompt
+            return {"contexts": []}
+
+        monkeypatch.setattr(pipeline, "API_KEY", "sk-test-key-not-a-placeholder")
+        monkeypatch.setattr(pipeline, "call_llm_json", fake_call_llm_json)
+        pipeline.stage1_extract("battery drains fast", "some grounding text",
+                                 device={"battery_pct": 7})
+        assert "Known device state" in captured["prompt"]
+        assert "Battery level: 7%" in captured["prompt"]
+
+    def test_stage1_extract_with_no_device_omits_block_from_prompt(self, monkeypatch):
+        captured = {}
+
+        def fake_call_llm_json(prompt, max_tokens=4000):
+            captured["prompt"] = prompt
+            return {"contexts": []}
+
+        monkeypatch.setattr(pipeline, "API_KEY", "sk-test-key-not-a-placeholder")
+        monkeypatch.setattr(pipeline, "call_llm_json", fake_call_llm_json)
+        pipeline.stage1_extract("battery drains fast", "some grounding text", device=None)
+        # Rule 10's own text mentions the phrase "Known device state" in the
+        # abstract (it's part of the prompt unconditionally) -- what must
+        # be absent is the actual rendered block, which always includes at
+        # least one concrete field line.
+        assert "Battery level:" not in captured["prompt"]
+        assert "Free storage:" not in captured["prompt"]
+
+    def test_run_pipeline_with_no_device_has_empty_notes(self, real_samples):
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        result = pipeline.run_pipeline(sample["complaint"], sample["siis_response"])
+        assert result["meta"]["device_context_notes"] == []
+
+    def test_run_pipeline_with_device_returns_notes(self, real_samples):
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        result = pipeline.run_pipeline(
+            sample["complaint"], sample["siis_response"], device={"battery_pct": 5}
+        )
+        assert len(result["meta"]["device_context_notes"]) == 1
+
+    def test_device_context_is_not_persisted_into_cache(self, real_samples):
+        """The base plan is cached without device data -- a later caller
+        for the same complaint who passes NO device must not see the
+        earlier caller's device-specific notes leak in via the cache."""
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        first = pipeline.run_pipeline(
+            sample["complaint"], sample["siis_response"], device={"battery_pct": 5}
+        )
+        assert first["meta"]["cache_hit"] is False
+        assert len(first["meta"]["device_context_notes"]) == 1
+
+        second = pipeline.run_pipeline(sample["complaint"], sample["siis_response"])
+        assert second["meta"]["cache_hit"] is True
+        assert second["meta"]["device_context_notes"] == []
+
+    def test_cache_hit_still_applies_fresh_device_context(self, real_samples):
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        first = pipeline.run_pipeline(sample["complaint"], sample["siis_response"])
+        assert first["meta"]["cache_hit"] is False
+
+        second = pipeline.run_pipeline(
+            sample["complaint"], sample["siis_response"], device={"battery_pct": 5}
+        )
+        assert second["meta"]["cache_hit"] is True
+        assert len(second["meta"]["device_context_notes"]) == 1
+
+    def test_end_to_end_reorders_actions_via_device_context(self, monkeypatch):
+        def fake_stage1(technical_query, siis_response, force_offline=False, device=None):
+            goal = {
+                "goal": "Follow these steps to perform this Battery Troubleshooting",
+                "title": "Battery drain",
+                "score": 0.9,
+                "actions": [
+                    {"actionName": "Display Settings",
+                     "description": "It will adjust the display brightness",
+                     "category": "auto",
+                     "stepGroups": [{"steps": ["Tap Display."]}]},
+                    {"actionName": "Battery Settings",
+                     "description": "It will enable power saving mode",
+                     "category": "auto",
+                     "stepGroups": [{"steps": ["Tap Battery."]}]},
+                ],
+            }
+            return {"contexts": [goal]}, False
+
+        monkeypatch.setattr(pipeline, "stage1_extract", fake_stage1)
+        result = pipeline.run_pipeline("battery complaint", "grounding text",
+                                        device={"battery_pct": 5})
+        actions = result["response"]["contexts"][0]["actions"]
+        assert actions[0]["actionName"] == "Battery Settings"
+
+    def test_streaming_also_applies_device_context(self, real_samples):
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        events = list(pipeline.run_pipeline_streaming(
+            sample["complaint"], sample["siis_response"], device={"battery_pct": 5}
+        ))
+        assert events[-1]["stage"] == "complete"
+        assert len(events[-1]["data"]["meta"]["device_context_notes"]) == 1
 
 
 class TestStreamingParity:
@@ -170,7 +299,7 @@ class TestStreamingParity:
         """The streaming variant duplicates the validate+escalation loop
         (it can't share run_pipeline()'s code directly since it yields
         progress between stages) -- must not have silently drifted."""
-        def fake_stage1(technical_query, siis_response, force_offline=False):
+        def fake_stage1(technical_query, siis_response, force_offline=False, device=None):
             goal = {
                 "goal": "Follow these steps to perform this Test Issue Troubleshooting",
                 "title": "Test issue",

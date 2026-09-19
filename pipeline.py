@@ -19,6 +19,7 @@ code against deeplink_matching.py, never trusting the LLM with real URIs.
 
 import json
 import time
+from typing import Optional
 
 from llm_client import call_llm_json, MODEL, API_KEY, LAST_USAGE, estimate_cost_usd
 from prompts import STAGE0_ENRICHMENT_PROMPT, STAGE1_EXTRACTION_PROMPT
@@ -27,6 +28,7 @@ from cache import get_cached, set_cached
 from request_log import append_log
 from deeplink_matching import match_and_build_deeplink
 from escalation import build_escalation_recommendation, LLM_SCORE_ESCALATION_THRESHOLD
+from device_signals import apply_device_context
 import offline_fallback
 
 _PLACEHOLDER_KEYS = {None, "", "your_key_here"}
@@ -73,9 +75,42 @@ def _guess_topic(technical_query: str) -> str:
     return "Device"
 
 
+def _format_device_context_block(device: Optional[dict]) -> str:
+    """Renders schema.DeviceContext's fields (already validated, plain
+    dict) into the "Known device state" block STAGE1_EXTRACTION_PROMPT
+    expects -- an empty string (no block at all) when there's no device
+    context, or none of its fields are set, so the prompt is byte-
+    identical to before Task 35 for every caller that doesn't pass one."""
+    if not device:
+        return ""
+    lines = []
+    if device.get("battery_pct") is not None:
+        lines.append(f"- Battery level: {device['battery_pct']}%")
+    if device.get("storage_free_pct") is not None:
+        lines.append(f"- Free storage: {device['storage_free_pct']}%")
+    if device.get("os_version"):
+        lines.append(f"- OS version: {device['os_version']}")
+    if device.get("uptime_hours") is not None:
+        lines.append(f"- Uptime since last restart: {device['uptime_hours']} hours")
+    if device.get("last_restart_hours_ago") is not None:
+        lines.append(f"- Hours since last restart: {device['last_restart_hours_ago']}")
+    if not lines:
+        return ""
+    return (
+        "Known device state (use per rule 10 below -- context only, never a "
+        "license to invent a fix):\n" + "\n".join(lines)
+    )
+
+
 def stage1_extract(technical_query: str, siis_response: str = "",
-                    force_offline: bool = False) -> tuple[dict, bool]:
-    """Returns (result, used_fallback)."""
+                    force_offline: bool = False, device: Optional[dict] = None) -> tuple[dict, bool]:
+    """Returns (result, used_fallback). `device` (Task 35) is only used to
+    enrich the LLM prompt here -- the offline path ignores it entirely
+    (offline_extract's signature is unchanged), and either way the actual
+    device-aware reordering/notes happen once, uniformly, in
+    run_pipeline()/run_pipeline_streaming() via apply_device_context() --
+    see device_signals.py for why that's done centrally instead of inside
+    each path separately."""
     if not force_offline and llm_available():
         topic = _guess_topic(technical_query)
         try:
@@ -83,6 +118,7 @@ def stage1_extract(technical_query: str, siis_response: str = "",
                 technical_query=technical_query,
                 siis_response=siis_response or "(no reference text provided)",
                 topic=topic,
+                device_context_block=_format_device_context_block(device),
             )
             result = call_llm_json(prompt, max_tokens=4000)
             if "contexts" in result:
@@ -139,7 +175,7 @@ def enrich_with_deeplinks(goal_dict: dict, variant: str = "hybrid") -> dict:
 # Full pipeline
 # ---------------------------------------------------------------------------
 
-def run_pipeline(raw_complaint: str, siis_response: str = "") -> dict:
+def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[dict] = None) -> dict:
     start = time.time()
     total_prompt_tokens = 0
     total_completion_tokens = 0
@@ -153,11 +189,17 @@ def run_pipeline(raw_complaint: str, siis_response: str = "") -> dict:
         total_completion_tokens += LAST_USAGE["completion_tokens"]
     technical_query = enrichment["technical_query"]
 
-    # Fast-path cache check
+    # Fast-path cache check. The cache stores the base plan only (no device
+    # data baked in, since the cache key is technical_query alone) -- so
+    # device context is applied fresh on EVERY request, cache hit or not,
+    # never persisted into the cached entry. See device_signals.py.
     cached = get_cached(technical_query)
     if cached:
         cached["meta"]["cache_hit"] = True
         cached["meta"]["latency_ms"] = round((time.time() - start) * 1000, 1)
+        cached["meta"]["device_context_notes"] = apply_device_context(
+            cached["response"]["contexts"], device
+        )
         append_log({
             "domain_guess": _guess_topic(technical_query),
             "cache_hit": True,
@@ -170,7 +212,7 @@ def run_pipeline(raw_complaint: str, siis_response: str = "") -> dict:
         return cached
 
     # Stage 1
-    extraction, fb1 = stage1_extract(technical_query, siis_response)
+    extraction, fb1 = stage1_extract(technical_query, siis_response, device=device)
     used_fallback_any = used_fallback_any or fb1
     if not fb1:
         total_prompt_tokens += LAST_USAGE["prompt_tokens"]
@@ -217,7 +259,13 @@ def run_pipeline(raw_complaint: str, siis_response: str = "") -> dict:
     }
 
     if contexts:
+        # Cache the BASE plan (no device data) before applying device
+        # context below -- set_cached() serialises to disk synchronously
+        # (cache.py's json.dump), so the in-place reordering that follows
+        # can never leak into what's persisted for the next caller.
         set_cached(technical_query, response)
+
+    response["meta"]["device_context_notes"] = apply_device_context(contexts, device)
 
     append_log({
         "domain_guess": _guess_topic(technical_query),
@@ -241,7 +289,7 @@ def run_pipeline(raw_complaint: str, siis_response: str = "") -> dict:
 # -- only in how/when the result is delivered.
 # ---------------------------------------------------------------------------
 
-def run_pipeline_streaming(raw_complaint: str, siis_response: str = ""):
+def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: Optional[dict] = None):
     """Generator of small dicts: {"stage": ..., "status": "running"|"done"|"error", "data": {...}}.
     Caller (main.py's SSE route) is responsible for JSON-encoding each one."""
     start = time.time()
@@ -276,6 +324,9 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = ""):
         if cached:
             cached["meta"]["cache_hit"] = True
             cached["meta"]["latency_ms"] = round((time.time() - start) * 1000, 1)
+            cached["meta"]["device_context_notes"] = apply_device_context(
+                cached["response"]["contexts"], device
+            )
             yield {"stage": "cache", "status": "hit"}
             append_log({
                 "domain_guess": _guess_topic(technical_query),
@@ -292,7 +343,7 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = ""):
 
         # Stage 1
         yield {"stage": "extract", "status": "running"}
-        extraction, fb1 = stage1_extract(technical_query, siis_response)
+        extraction, fb1 = stage1_extract(technical_query, siis_response, device=device)
         used_fallback_any = used_fallback_any or fb1
         if not fb1:
             total_prompt_tokens += LAST_USAGE["prompt_tokens"]
@@ -349,6 +400,8 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = ""):
 
         if contexts:
             set_cached(technical_query, response)
+
+        response["meta"]["device_context_notes"] = apply_device_context(contexts, device)
 
         append_log({
             "domain_guess": _guess_topic(technical_query),

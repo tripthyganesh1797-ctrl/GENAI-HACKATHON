@@ -54,6 +54,7 @@ You must follow the output schema EXACTLY. Judges run automated checks on every 
 INPUT
 Technical query: "{technical_query}"
 Reference troubleshooting text (may be empty): "{siis_response}"
+{device_context_block}
 
 NON-NEGOTIABLE RULES (violating any of these fails automated grading):
 1. "goal" field must be EXACTLY: "Follow these steps to perform this {topic} Troubleshooting"
@@ -81,6 +82,11 @@ NON-NEGOTIABLE RULES (violating any of these fails automated grading):
    Do NOT do this for a single issue described with multiple details or
    steps (e.g. "screen flickers and then goes black" is ONE display issue,
    not two) -- only split when the issues are genuinely unrelated domains.
+10. If a "Known device state" block is present above, you MAY use it to
+    order or word existing troubleshooting steps sensibly (e.g. mention
+    charging first when battery is very low) -- but NEVER as a license to
+    invent a fix, action, or claim the reference text doesn't support.
+    Device state augments judgment; it never replaces grounding.
 
 OUTPUT SCHEMA (Goal object, wrapped in a contexts list):
 {{

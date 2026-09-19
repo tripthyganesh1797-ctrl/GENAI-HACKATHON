@@ -121,7 +121,8 @@ def troubleshoot(payload: TroubleshootRequest, request: Request):
     # No try/except here -- an uncaught exception falls through to the
     # unhandled_exception_handler above, which returns the same structured
     # {"error": {...}} shape every other failure mode in this service uses.
-    result = run_pipeline(payload.query, payload.siis_response or "")
+    device = payload.device.model_dump(exclude_none=True) if payload.device else None
+    result = run_pipeline(payload.query, payload.siis_response or "", device=device)
     result.setdefault("meta", {})["request_id"] = request.state.request_id
     return result
 
@@ -142,7 +143,8 @@ def troubleshoot_batch(payload: BatchTroubleshootRequest, request: Request):
     results = []
     for item in payload.items:
         try:
-            result = run_pipeline(item.query, item.siis_response or "")
+            device = item.device.model_dump(exclude_none=True) if item.device else None
+            result = run_pipeline(item.query, item.siis_response or "", device=device)
             results.append({"ok": True, "result": result})
         except Exception as e:
             results.append({"ok": False, "error": str(e), "query": item.query})
@@ -158,20 +160,36 @@ def troubleshoot_batch(payload: BatchTroubleshootRequest, request: Request):
 def troubleshoot_stream(
     query: str = Query(..., description="Raw user complaint"),
     siis_response: str = Query("", description="Optional reference troubleshooting text"),
+    battery_pct: float = Query(None, ge=0, le=100, description="Task 35: optional device context"),
+    storage_free_pct: float = Query(None, ge=0, le=100),
+    os_version: str = Query(None),
+    uptime_hours: float = Query(None, ge=0),
+    last_restart_hours_ago: float = Query(None, ge=0),
 ):
     """Server-Sent Events version of /v1/troubleshoot -- same pipeline, same
     final payload, but emits one event per stage (enrich -> cache check ->
     extract -> validate -> deeplink match -> complete) so a UI can show the
     engine actually working instead of a blank loading spinner. Uses GET +
     query params (not POST) because the browser EventSource API only
-    supports GET.
+    supports GET -- which is also why device context (normally one nested
+    JSON object, schema.DeviceContext) is flattened into individual query
+    params here instead.
 
     Try it:
         curl -N "http://localhost:8000/v1/troubleshoot/stream?query=battery+drains+fast"
+        curl -N "http://localhost:8000/v1/troubleshoot/stream?query=battery+drains+fast&battery_pct=6"
     """
+    device_raw = {
+        "battery_pct": battery_pct,
+        "storage_free_pct": storage_free_pct,
+        "os_version": os_version,
+        "uptime_hours": uptime_hours,
+        "last_restart_hours_ago": last_restart_hours_ago,
+    }
+    device = {k: v for k, v in device_raw.items() if v is not None} or None
 
     def event_source():
-        for event in run_pipeline_streaming(query, siis_response):
+        for event in run_pipeline_streaming(query, siis_response, device=device):
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(

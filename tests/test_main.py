@@ -1,5 +1,7 @@
 """main.py — the FastAPI service, exercised through TestClient (no real
 network socket, no separate uvicorn process needed)."""
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -97,11 +99,11 @@ class TestBatchTroubleshoot:
         real_run_pipeline = main.run_pipeline
         calls = {"n": 0}
 
-        def flaky(query, siis_response=""):
+        def flaky(query, siis_response="", device=None):
             calls["n"] += 1
             if calls["n"] == 2:
                 raise RuntimeError("simulated per-item crash")
-            return real_run_pipeline(query, siis_response)
+            return real_run_pipeline(query, siis_response, device=device)
 
         monkeypatch.setattr(main, "run_pipeline", flaky)
         res = client.post("/v1/troubleshoot/batch", json={
@@ -216,3 +218,104 @@ def test_stats_includes_feedback_section(client):
     body = res.json()
     assert "feedback" in body
     assert "total_feedback_events" in body["feedback"]
+
+
+class TestDeviceContext:
+    """Task 35: POST /v1/troubleshoot(/batch) and GET /v1/troubleshoot/stream
+    all accept optional device-state signals and thread them into
+    run_pipeline()/run_pipeline_streaming(). The actual reordering/notes
+    logic is covered by tests/test_device_signals.py and
+    tests/test_pipeline.py -- these only check the wiring at the HTTP
+    boundary: payload -> dict passed to the pipeline call."""
+
+    def test_troubleshoot_without_device_passes_none(self, monkeypatch, client):
+        import main
+        captured = {}
+
+        def fake_run_pipeline(query, siis_response="", device=None):
+            captured["device"] = device
+            return {"query": query, "query_variations": [], "response": {"contexts": []},
+                    "meta": {"latency_ms": 1.0, "cache_hit": False, "model": "x",
+                              "cost_usd": 0.0, "device_context_notes": []}}
+
+        monkeypatch.setattr(main, "run_pipeline", fake_run_pipeline)
+        res = client.post("/v1/troubleshoot", json={"query": "anything"})
+        assert res.status_code == 200
+        assert captured["device"] is None
+
+    def test_troubleshoot_with_device_is_forwarded_as_a_plain_dict(self, monkeypatch, client):
+        import main
+        captured = {}
+
+        def fake_run_pipeline(query, siis_response="", device=None):
+            captured["device"] = device
+            return {"query": query, "query_variations": [], "response": {"contexts": []},
+                    "meta": {"latency_ms": 1.0, "cache_hit": False, "model": "x",
+                              "cost_usd": 0.0, "device_context_notes": []}}
+
+        monkeypatch.setattr(main, "run_pipeline", fake_run_pipeline)
+        res = client.post("/v1/troubleshoot", json={
+            "query": "anything", "device": {"battery_pct": 6, "storage_free_pct": 3},
+        })
+        assert res.status_code == 200
+        assert captured["device"] == {"battery_pct": 6.0, "storage_free_pct": 3.0}
+
+    def test_troubleshoot_end_to_end_surfaces_device_context_notes(self, client, real_samples):
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        res = client.post("/v1/troubleshoot", json={
+            "query": sample["complaint"], "siis_response": sample["siis_response"],
+            "device": {"battery_pct": 4},
+        })
+        assert res.status_code == 200
+        assert len(res.json()["meta"]["device_context_notes"]) == 1
+
+    def test_batch_forwards_per_item_device_context(self, monkeypatch, client):
+        import main
+        captured = []
+
+        def fake_run_pipeline(query, siis_response="", device=None):
+            captured.append(device)
+            return {"query": query, "query_variations": [], "response": {"contexts": []},
+                    "meta": {"latency_ms": 1.0, "cache_hit": False, "model": "x",
+                              "cost_usd": 0.0, "device_context_notes": []}}
+
+        monkeypatch.setattr(main, "run_pipeline", fake_run_pipeline)
+        res = client.post("/v1/troubleshoot/batch", json={"items": [
+            {"query": "a", "device": {"battery_pct": 5}},
+            {"query": "b"},
+        ]})
+        assert res.status_code == 200
+        assert captured[0] == {"battery_pct": 5.0}
+        assert captured[1] is None
+
+    @staticmethod
+    def _parse_sse_events(raw: str) -> list:
+        lines = [line for line in raw.split("\n\n") if line.strip().startswith("data:")]
+        return [json.loads(line[len("data: "):]) for line in lines]
+
+    def test_stream_accepts_flattened_device_query_params(self, real_samples):
+        """See test_troubleshoot_stream_emits_sse_events above for why this
+        uses its own short-lived TestClient rather than the shared module-
+        scoped `client` fixture."""
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        with TestClient(app) as c:
+            with c.stream(
+                "GET", "/v1/troubleshoot/stream",
+                params={"query": sample["complaint"], "siis_response": sample["siis_response"],
+                        "battery_pct": 4},
+            ) as res:
+                raw = "".join(res.iter_text())
+        events = self._parse_sse_events(raw)
+        assert events[-1]["stage"] == "complete"
+        assert len(events[-1]["data"]["meta"]["device_context_notes"]) == 1
+
+    def test_stream_with_no_device_params_has_empty_notes(self, real_samples):
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        with TestClient(app) as c:
+            with c.stream(
+                "GET", "/v1/troubleshoot/stream",
+                params={"query": sample["complaint"], "siis_response": sample["siis_response"]},
+            ) as res:
+                raw = "".join(res.iter_text())
+        events = self._parse_sse_events(raw)
+        assert events[-1]["data"]["meta"]["device_context_notes"] == []

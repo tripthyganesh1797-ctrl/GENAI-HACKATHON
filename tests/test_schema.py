@@ -3,8 +3,8 @@ import pytest
 from pydantic import ValidationError
 
 from schema import (
-    Action, ActionCategory, BatchTroubleshootRequest, EscalationAction,
-    EscalationRecommendation, FeedbackRequest, Goal, StepGroup, TroubleshootRequest,
+    Action, ActionCategory, BatchTroubleshootRequest, DeviceContext, EscalationAction,
+    EscalationRecommendation, FeedbackRequest, Goal, Meta, StepGroup, TroubleshootRequest,
 )
 
 
@@ -77,6 +77,34 @@ def test_goal_accepts_optional_escalation():
     assert goal_without.escalation is None
 
 
+def test_troubleshoot_request_device_is_optional_and_defaults_to_none():
+    req = TroubleshootRequest(query="battery drains fast")
+    assert req.device is None
+
+
+def test_troubleshoot_request_accepts_partial_device_context():
+    req = TroubleshootRequest(query="battery drains fast", device={"battery_pct": 6})
+    assert req.device.battery_pct == 6
+    assert req.device.storage_free_pct is None
+
+
+def test_device_context_rejects_out_of_range_percentages():
+    with pytest.raises(ValidationError):
+        DeviceContext(battery_pct=150)
+    with pytest.raises(ValidationError):
+        DeviceContext(storage_free_pct=-5)
+
+
+def test_device_context_rejects_negative_uptime():
+    with pytest.raises(ValidationError):
+        DeviceContext(uptime_hours=-1)
+
+
+def test_meta_device_context_notes_defaults_to_empty_list():
+    meta = Meta(latency_ms=1.0, cache_hit=False, model="x", cost_usd=0.0)
+    assert meta.device_context_notes == []
+
+
 def test_batch_request_enforces_one_to_twenty_items():
     with pytest.raises(ValidationError):
         BatchTroubleshootRequest(items=[])
@@ -86,3 +114,11 @@ def test_batch_request_enforces_one_to_twenty_items():
     req = BatchTroubleshootRequest(items=[{"query": "battery drains fast"}])
     assert len(req.items) == 1
     assert req.items[0].siis_response is None
+    assert req.items[0].device is None
+
+
+def test_batch_item_accepts_device_context():
+    req = BatchTroubleshootRequest(items=[
+        {"query": "battery drains fast", "device": {"battery_pct": 5}},
+    ])
+    assert req.items[0].device.battery_pct == 5

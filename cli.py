@@ -136,6 +136,9 @@ def print_result(data: dict, verbose: bool = False):
         f"tokens {meta.get('total_tokens', 0)}"
     ))
 
+    for note in meta.get("device_context_notes", []):
+        print(yellow(f"  ⚠ {note}"))
+
     if not contexts:
         print(yellow("\n  no match in the diagnostic catalog\n"))
         return
@@ -171,23 +174,39 @@ def print_result(data: dict, verbose: bool = False):
 # Subcommands
 # ---------------------------------------------------------------------------
 
+def _device_dict_from_args(args) -> dict | None:
+    """Task 35: --battery-pct etc. are opt-in on `query` and `stream` --
+    None (not passed) for every field means None here, so behavior is
+    unchanged for every existing invocation that doesn't use them."""
+    device = {
+        "battery_pct": args.battery_pct,
+        "storage_free_pct": args.storage_free_pct,
+        "os_version": args.os_version,
+        "uptime_hours": args.uptime_hours,
+        "last_restart_hours_ago": args.last_restart_hours_ago,
+    }
+    device = {k: v for k, v in device.items() if v is not None}
+    return device or None
+
+
 def cmd_query(args):
     siis_response = args.siis_response or ""
     if args.siis_file:
         with open(args.siis_file) as f:
             siis_response = f.read()
+    device = _device_dict_from_args(args)
 
     if args.api_base:
-        status, data = _http_post_json(
-            f"{args.api_base}/v1/troubleshoot",
-            {"query": args.query, "siis_response": siis_response},
-        )
+        payload = {"query": args.query, "siis_response": siis_response}
+        if device:
+            payload["device"] = device
+        status, data = _http_post_json(f"{args.api_base}/v1/troubleshoot", payload)
         if status != 200:
             print(red(f"API error {status}: {json.dumps(data)}"))
             sys.exit(1)
     else:
         from pipeline import run_pipeline
-        data = run_pipeline(args.query, siis_response)
+        data = run_pipeline(args.query, siis_response, device=device)
 
     if args.json:
         print(json.dumps(data, indent=2))
@@ -205,7 +224,8 @@ def cmd_stream(args):
 
     print(bold(f"streaming: {args.query}\n"))
     t0 = time.time()
-    for event in run_pipeline_streaming(args.query, args.siis_response or ""):
+    device = _device_dict_from_args(args)
+    for event in run_pipeline_streaming(args.query, args.siis_response or "", device=device):
         stage, status = event.get("stage"), event.get("status")
         elapsed_ms = (time.time() - t0) * 1000
         prefix = dim(f"[{elapsed_ms:7.1f}ms]")
@@ -318,18 +338,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    def _add_device_args(sp):
+        """Task 35: optional device-state signals shared by `query` and
+        `stream`. Every flag defaults to None -- omit all of them and
+        nothing about the pipeline's behavior changes."""
+        sp.add_argument("--battery-pct", type=float, default=None, metavar="0-100",
+                         help="Current battery percentage")
+        sp.add_argument("--storage-free-pct", type=float, default=None, metavar="0-100",
+                         help="Free storage percentage")
+        sp.add_argument("--os-version", default=None, help="OS/One UI version string")
+        sp.add_argument("--uptime-hours", type=float, default=None,
+                         help="Hours since the device was last restarted")
+        sp.add_argument("--last-restart-hours-ago", type=float, default=None,
+                         help="Hours since the last restart (same clock as --uptime-hours in the common case)")
+
     q = sub.add_parser("query", help="Run a single complaint through the pipeline")
     q.add_argument("query", help="The raw complaint text")
     q.add_argument("--siis-response", default=None, help="Reference troubleshooting text to ground the plan in")
     q.add_argument("--siis-file", default=None, help="Read --siis-response from a file instead")
     q.add_argument("--json", action="store_true", help="Print the raw JSON response instead of formatted text")
     q.add_argument("--verbose", "-v", action="store_true", help="Also show each match's score breakdown (see deeplink_matching.py)")
+    _add_device_args(q)
     q.set_defaults(func=cmd_query)
 
     s = sub.add_parser("stream", help="Run a complaint with live stage-by-stage output (in-process only)")
     s.add_argument("query", help="The raw complaint text")
     s.add_argument("--siis-response", default=None)
     s.add_argument("--verbose", "-v", action="store_true")
+    _add_device_args(s)
     s.set_defaults(func=cmd_stream)
 
     b = sub.add_parser("batch", help="Run many complaints from a JSON file (sample_queries_real.json shape, or {\"items\": [...]})")
