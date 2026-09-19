@@ -210,6 +210,138 @@ def run_pipeline(raw_complaint: str, siis_response: str = "") -> dict:
     return response
 
 
+# ---------------------------------------------------------------------------
+# Streaming variant — same pipeline, yields one event per stage so a client
+# (the demo UI, or `curl -N`) can render live progress instead of waiting on
+# one big response. Reuses every helper above; the final "complete" event
+# carries the exact same payload run_pipeline() would return, so the two
+# paths can never silently drift apart in their actual troubleshooting logic
+# -- only in how/when the result is delivered.
+# ---------------------------------------------------------------------------
+
+def run_pipeline_streaming(raw_complaint: str, siis_response: str = ""):
+    """Generator of small dicts: {"stage": ..., "status": "running"|"done"|"error", "data": {...}}.
+    Caller (main.py's SSE route) is responsible for JSON-encoding each one."""
+    start = time.time()
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    used_fallback_any = False
+
+    try:
+        yield {"stage": "start", "status": "done", "data": {"query": raw_complaint}}
+
+        # Stage 0
+        yield {"stage": "enrich", "status": "running"}
+        enrichment, fb0 = stage0_enrich(raw_complaint)
+        used_fallback_any = used_fallback_any or fb0
+        if not fb0:
+            total_prompt_tokens += LAST_USAGE["prompt_tokens"]
+            total_completion_tokens += LAST_USAGE["completion_tokens"]
+        technical_query = enrichment["technical_query"]
+        yield {
+            "stage": "enrich",
+            "status": "done",
+            "data": {
+                "technical_query": technical_query,
+                "query_variations": enrichment.get("query_variations", []),
+                "detected_language": enrichment.get("detected_language"),
+                "used_offline_fallback": fb0,
+            },
+        }
+
+        # Fast-path cache check
+        cached = get_cached(technical_query)
+        if cached:
+            cached["meta"]["cache_hit"] = True
+            cached["meta"]["latency_ms"] = round((time.time() - start) * 1000, 1)
+            yield {"stage": "cache", "status": "hit"}
+            append_log({
+                "domain_guess": _guess_topic(technical_query),
+                "cache_hit": True,
+                "latency_ms": cached["meta"]["latency_ms"],
+                "total_tokens": 0,
+                "cost_usd": 0.0,
+                "fallback": cached["meta"].get("fallback"),
+                "used_offline_fallback": cached["meta"].get("used_offline_fallback", False),
+            })
+            yield {"stage": "complete", "status": "done", "data": cached}
+            return
+        yield {"stage": "cache", "status": "miss"}
+
+        # Stage 1
+        yield {"stage": "extract", "status": "running"}
+        extraction, fb1 = stage1_extract(technical_query, siis_response)
+        used_fallback_any = used_fallback_any or fb1
+        if not fb1:
+            total_prompt_tokens += LAST_USAGE["prompt_tokens"]
+            total_completion_tokens += LAST_USAGE["completion_tokens"]
+        contexts = extraction.get("contexts", [])
+        yield {
+            "stage": "extract",
+            "status": "done",
+            "data": {"num_contexts": len(contexts), "used_offline_fallback": fb1},
+        }
+
+        # Validate + fix each Goal
+        yield {"stage": "validate", "status": "running"}
+        all_errors = []
+        for goal in contexts:
+            topic = _guess_topic(technical_query)
+            errors = validate_goal_object(goal, topic)
+            if errors:
+                all_errors.extend(errors)
+            for action in goal.get("actions", []):
+                action["description"] = strip_urls(action["description"])
+                for sg in action.get("stepGroups", []):
+                    sg["steps"] = [strip_urls(s) for s in sg["steps"]]
+        yield {"stage": "validate", "status": "done", "data": {"validation_errors": all_errors}}
+
+        # Stage 2: attach deeplinks
+        yield {"stage": "deeplink_match", "status": "running"}
+        contexts = [enrich_with_deeplinks(g) for g in contexts]
+        yield {"stage": "deeplink_match", "status": "done"}
+
+        latency_ms = round((time.time() - start) * 1000, 1)
+        real_cost = estimate_cost_usd(total_prompt_tokens, total_completion_tokens)
+
+        response = {
+            "query": raw_complaint,
+            "query_variations": enrichment.get("query_variations", []),
+            "response": {"contexts": contexts},
+            "meta": {
+                "latency_ms": latency_ms,
+                "cache_hit": False,
+                "model": "offline-rule-based" if used_fallback_any else MODEL,
+                "cost_usd": real_cost,
+                "prompt_tokens": total_prompt_tokens,
+                "completion_tokens": total_completion_tokens,
+                "total_tokens": total_prompt_tokens + total_completion_tokens,
+                "fallback": "no_match" if not contexts else None,
+                "used_offline_fallback": used_fallback_any,
+                "detected_language": enrichment.get("detected_language", "en" if used_fallback_any else None),
+                "validation_errors": all_errors,
+            },
+        }
+
+        if contexts:
+            set_cached(technical_query, response)
+
+        append_log({
+            "domain_guess": _guess_topic(technical_query),
+            "cache_hit": False,
+            "latency_ms": latency_ms,
+            "total_tokens": total_prompt_tokens + total_completion_tokens,
+            "cost_usd": real_cost,
+            "fallback": response["meta"]["fallback"],
+            "used_offline_fallback": used_fallback_any,
+        })
+
+        yield {"stage": "complete", "status": "done", "data": response}
+
+    except Exception as e:
+        yield {"stage": "error", "status": "error", "data": {"message": str(e)}}
+
+
 if __name__ == "__main__":
     with open("sample_queries_real.json") as f:
         samples = json.load(f)

@@ -8,11 +8,14 @@ Then test with:
       -d '{"query": "screen flickers and battery dies fast"}'
 """
 
-from fastapi import FastAPI, HTTPException
+import json
+
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from schema import TroubleshootRequest
 
-from pipeline import run_pipeline, llm_available
+from pipeline import run_pipeline, run_pipeline_streaming, llm_available
 from request_log import compute_stats
 from deeplink_matching import get_index
 
@@ -55,6 +58,36 @@ def troubleshoot(request: TroubleshootRequest):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/v1/troubleshoot/stream")
+def troubleshoot_stream(
+    query: str = Query(..., description="Raw user complaint"),
+    siis_response: str = Query("", description="Optional reference troubleshooting text"),
+):
+    """Server-Sent Events version of /v1/troubleshoot -- same pipeline, same
+    final payload, but emits one event per stage (enrich -> cache check ->
+    extract -> validate -> deeplink match -> complete) so a UI can show the
+    engine actually working instead of a blank loading spinner. Uses GET +
+    query params (not POST) because the browser EventSource API only
+    supports GET.
+
+    Try it:
+        curl -N "http://localhost:8000/v1/troubleshoot/stream?query=battery+drains+fast"
+    """
+
+    def event_source():
+        for event in run_pipeline_streaming(query, siis_response):
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # disable nginx buffering so events stream live
+        },
+    )
 
 
 @app.get("/stats")
