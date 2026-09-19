@@ -50,6 +50,18 @@ Beyond the core troubleshooting pipeline, the service also ships:
   Samsung Support" instruction — never software steps for this class of
   complaint. `meta.safety_alert` / `meta.safety_reason` flag it for any
   API/CLI/UI consumer; `index.html` renders an unmissable red banner.
+- **Clarifying-question detection** (`clarify.py`) — a complaint like "my
+  phone isn't working" or "it's broken" gives the engine almost no signal
+  to work with. Rather than silently handing back a low-confidence guess,
+  `meta.needs_clarification` / `meta.clarifying_question` /
+  `meta.clarifying_topic_options` flag it, and `index.html` shows an
+  amber "could you tell us more?" banner with one-click topic chips
+  (Battery, Screen, Camera, Wi-Fi/Bluetooth, ...) that append the topic
+  and re-run instantly. Purely additive — unlike the safety short-circuit
+  above, the normal plan is still computed and returned in full; this
+  never suppresses `response.contexts`, which is why it can never put
+  gate G3's official-query coverage at risk (verified: none of the 20
+  official queries trip it).
 
 **Contents:** [Architecture](#architecture) · [Setup](#setup) · [Run the pipeline directly](#run-the-pipeline-directly-no-server-needed-fastest-way-to-test) · [Run the API server](#run-the-api-server) · [Run the tests](#run-the-tests) · [Run with Docker](#run-with-docker) · [Try the demo UI](#try-the-demo-ui) · [Project structure](#project-structure) · [Production-readiness notes](#production-readiness-notes) · [Submission checklist](#submission-checklist-per-hackathon_guidelinespdf) · [Known limitations](#known-limitations)
 
@@ -303,6 +315,7 @@ with hover tooltips and a screen-reader-friendly table view, not mock data.
 | `device_signals.py` | Optional device-state context (battery/storage/uptime) — reorders same-category actions toward what's relevant, adds an advisory note; a no-op when omitted |
 | `session_memory.py` | Session-scoped avoidance: a deeplink marked unhelpful (with a `session_id`) is steered away from in that session's later requests — distinct from `feedback.py`'s global re-ranking |
 | `safety.py` | Physical-hazard short-circuit (swollen battery, smoke, fire, sparks, chemical smell, burns) — narrow keyword-based detection that replaces the plan with a single "stop, don't charge, contact Samsung Support" Goal, on both execution paths, before Stage 0 or the cache ever runs |
+| `clarify.py` | Vague-complaint detection ("it's broken", "not working") — additive-only `meta.needs_clarification`/`clarifying_question` flag that never suppresses `response.contexts`; verified to never trip on any of the 20 official queries |
 | `report.py` | Packages an already-computed result into a shareable Markdown/HTML report (`POST /v1/report`) — a pure formatter, never re-runs the pipeline |
 | `pipeline.py` | Orchestrates: complaint → enrich → extract → validate → deeplink match → cache, choosing LLM vs offline path per-request |
 | `cache.py` | Fast-path semantic cache (keyword overlap) |
