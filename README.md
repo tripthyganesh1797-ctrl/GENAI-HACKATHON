@@ -123,6 +123,19 @@ cp .env.example .env            # optional — only needed for the LLM path
 The service works with **zero setup beyond `pip install`** — without a
 `.env`/`LLM_API_KEY` it just runs entirely on the offline fallback path.
 
+This includes a real person typing their **own** complaint with nothing
+else supplied (no reference text to paste in) — e.g. `"my battery is
+getting drained quickly"` on the offline path grounds itself in
+`builtin_knowledge.py`, a small hand-written, explicitly-labeled
+non-official Android/Samsung troubleshooting reference, then runs
+through the exact same relevance-gating and Stage 2 deeplink-matching
+code as every other query. `meta.used_builtin_reference` on the
+response says whether a given plan came from that built-in text or a
+real caller-supplied `siis_response`, so it's never ambiguous which one
+grounded the answer. An out-of-scope complaint ("how do I cook pasta")
+still correctly comes back `no_match` — see
+`tests/test_builtin_knowledge.py`.
+
 ## Run the pipeline directly (no server needed, fastest way to test)
 
 ```bash
