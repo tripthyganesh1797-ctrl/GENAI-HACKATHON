@@ -136,6 +136,14 @@ class Meta(BaseModel):
     fallback: Optional[str] = None
     device_context_notes: List[str] = []
     session_notes: List[str] = []
+    # safety.py (physical-hazard short-circuit)
+    safety_alert: bool = False
+    safety_reason: Optional[str] = None
+    # clarify.py (vague-complaint detection) -- additive only, never
+    # affects `response.contexts`; see clarify.py's module docstring.
+    needs_clarification: bool = False
+    clarifying_question: Optional[str] = None
+    clarifying_topic_options: List[str] = []
 
 
 class TroubleshootResponse(BaseModel):

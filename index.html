@@ -318,6 +318,21 @@ document.querySelectorAll('.preset-btn').forEach(btn => {
 });
 
 diagnoseBtn.addEventListener('click', runDiagnosis);
+
+// clarify.py's topic chips (clarifyBanner()) are rendered dynamically
+// inside resultContainer, so this has to be delegated rather than bound
+// directly -- appends the chosen topic to whatever's already in the box
+// (rather than replacing it) and re-runs immediately.
+resultContainer.addEventListener('click', (e) => {
+  const chip = e.target.closest('.clarify-topic-chip');
+  if (!chip) return;
+  const topic = chip.dataset.topic || '';
+  const current = complaintInput.value.trim();
+  complaintInput.value = current && !current.toLowerCase().includes(topic.toLowerCase())
+    ? `${current}, ${topic.toLowerCase()}`
+    : current || topic;
+  runDiagnosis();
+});
 complaintInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
@@ -494,7 +509,8 @@ async function runDiagnosis() {
     updateMetrics(data.meta || {});
     renderContexts(data.response?.contexts || [], query, data.meta?.device_context_notes || [],
                    data.meta?.session_notes || [], data.meta?.safety_alert || false,
-                   data.meta?.safety_reason || null);
+                   data.meta?.safety_reason || null, data.meta?.needs_clarification || false,
+                   data.meta?.clarifying_question || null, data.meta?.clarifying_topic_options || []);
 
   } catch (err) {
     setApiOnline(false);
@@ -729,8 +745,34 @@ function safetyBanner(safetyAlert, safetyReason) {
   `;
 }
 
-function renderContexts(contexts, query, deviceContextNotes = [], sessionNotes = [], safetyAlert = false, safetyReason = null) {
+// clarify.py's vague-complaint detection -- purely informational (the
+// plan below is still shown in full, this is a "you may want to tell us
+// more" nudge, not a blocker). Distinct from escalationBanner() (a
+// per-goal confidence caveat on a plan that WAS extracted) and from
+// safetyBanner() (a hard stop) -- amber, same tone as the existing
+// "Lower-confidence match" escalation banner, and it appears above the
+// plan rather than attached to one goal since it's about the complaint
+// itself, not about any one match. Topic chips just append a keyword to
+// the complaint box and re-run -- the fastest way to turn "it's broken"
+// into "it's broken, the battery" without retyping anything.
+function clarifyBanner(needsClarification, clarifyingQuestion, topicOptions) {
+  if (!needsClarification) return '';
+  const chips = (topicOptions || []).map(t => {
+    const keyword = t.split(' / ')[0].split(' (')[0];
+    return `<button type="button" class="clarify-topic-chip text-xs font-mono px-2.5 py-1 rounded-md border border-amber/40 text-amber hover:bg-amber/10 transition-colors" data-topic="${escapeHtml(keyword)}">${escapeHtml(t)}</button>`;
+  }).join('');
+  return `
+    <div class="mb-5 bg-amber/10 border border-amber/40 rounded-xl px-4 py-3.5 fade-up">
+      <p class="text-amber font-display font-semibold text-xs mb-2">&#128161; Could you tell us more?</p>
+      <p class="text-ink/90 text-xs mb-3">${escapeHtml(clarifyingQuestion || '')}</p>
+      <div class="flex flex-wrap gap-2">${chips}</div>
+    </div>
+  `;
+}
+
+function renderContexts(contexts, query, deviceContextNotes = [], sessionNotes = [], safetyAlert = false, safetyReason = null, needsClarification = false, clarifyingQuestion = null, clarifyingTopicOptions = []) {
   const notesHtml = safetyBanner(safetyAlert, safetyReason) +
+                     clarifyBanner(needsClarification, clarifyingQuestion, clarifyingTopicOptions) +
                      deviceContextNotesBanner(deviceContextNotes) + sessionNotesBanner(sessionNotes);
   if (!contexts || contexts.length === 0) {
     resultContainer.innerHTML = `

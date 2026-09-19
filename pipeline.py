@@ -31,6 +31,7 @@ from escalation import build_escalation_recommendation, LLM_SCORE_ESCALATION_THR
 from device_signals import apply_device_context
 from session_memory import get_avoid_set
 from safety import detect_physical_hazard, build_safety_goal
+from clarify import detect_vague_complaint, build_clarifying_question, CLARIFYING_TOPIC_OPTIONS
 import offline_fallback
 
 _PLACEHOLDER_KEYS = {None, "", "your_key_here"}
@@ -329,6 +330,12 @@ def _build_safety_response(raw_complaint: str, hazard_reason: str, start: float)
             "session_notes": [],
             "safety_alert": True,
             "safety_reason": hazard_reason,
+            # A physical-hazard complaint always contains enough signal to
+            # act on (that's what detect_physical_hazard() matched on) --
+            # never worth also asking "could you clarify?" here.
+            "needs_clarification": False,
+            "clarifying_question": None,
+            "clarifying_topic_options": [],
         },
     }
 
@@ -347,6 +354,14 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
     hazard_reason = detect_physical_hazard(raw_complaint)
     if hazard_reason:
         return _build_safety_response(raw_complaint, hazard_reason, start)
+
+    # clarify.py: purely additive (see its module docstring) -- computed
+    # once here from the raw complaint text itself (not technical_query,
+    # and not dependent on cache/Stage0/1 at all) so it's cheap, always
+    # available, and applies identically whether this request is served
+    # from cache or extracted fresh below.
+    needs_clarification = detect_vague_complaint(raw_complaint)
+    clarifying_question = build_clarifying_question(raw_complaint) if needs_clarification else None
 
     # Task 36: which deeplinks (if any) THIS session already tried and
     # marked unhelpful. Empty for no session_id / a session with no
@@ -381,6 +396,15 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
             cached["response"]["contexts"], device
         )
         cached["meta"]["session_notes"] = []  # avoid_deeplinks is empty on every cache hit
+        # Recomputed fresh, not read from the cached entry: it depends on
+        # THIS request's raw_complaint wording, not on the technical_query
+        # cache key (two differently-worded complaints can share a cache
+        # entry via cache.py's fuzzy match, but "my phone's broken" and a
+        # detailed complaint that landed on the same entry deserve
+        # different clarification verdicts).
+        cached["meta"]["needs_clarification"] = needs_clarification
+        cached["meta"]["clarifying_question"] = clarifying_question
+        cached["meta"]["clarifying_topic_options"] = CLARIFYING_TOPIC_OPTIONS if needs_clarification else []
         append_log({
             "domain_guess": _guess_topic(technical_query),
             "issue_guess": _guess_issue_phrase(technical_query),
@@ -441,6 +465,9 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
             "validation_errors": all_errors,
             "safety_alert": False,
             "safety_reason": None,
+            "needs_clarification": needs_clarification,
+            "clarifying_question": clarifying_question,
+            "clarifying_topic_options": CLARIFYING_TOPIC_OPTIONS if needs_clarification else [],
         },
     }
 
@@ -501,6 +528,15 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
             yield {"stage": "complete", "status": "done", "data": safety_response}
             return
 
+        # clarify.py -- see run_pipeline()'s identical check for the full
+        # rationale. Emitted as its own stage event so the UI can show the
+        # "could you tell us more?" hint as soon as it's known, without
+        # waiting for the full plan to finish extracting.
+        needs_clarification = detect_vague_complaint(raw_complaint)
+        clarifying_question = build_clarifying_question(raw_complaint) if needs_clarification else None
+        if needs_clarification:
+            yield {"stage": "clarify", "status": "done", "data": {"clarifying_question": clarifying_question}}
+
         # Stage 0
         yield {"stage": "enrich", "status": "running"}
         enrichment, fb0 = stage0_enrich(raw_complaint)
@@ -530,6 +566,9 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
                 cached["response"]["contexts"], device
             )
             cached["meta"]["session_notes"] = []
+            cached["meta"]["needs_clarification"] = needs_clarification
+            cached["meta"]["clarifying_question"] = clarifying_question
+            cached["meta"]["clarifying_topic_options"] = CLARIFYING_TOPIC_OPTIONS if needs_clarification else []
             yield {"stage": "cache", "status": "hit"}
             append_log({
                 "domain_guess": _guess_topic(technical_query),
@@ -603,6 +642,9 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
                 "validation_errors": all_errors,
                 "safety_alert": False,
                 "safety_reason": None,
+                "needs_clarification": needs_clarification,
+                "clarifying_question": clarifying_question,
+                "clarifying_topic_options": CLARIFYING_TOPIC_OPTIONS if needs_clarification else [],
             },
         }
 
