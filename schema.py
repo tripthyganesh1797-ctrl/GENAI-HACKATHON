@@ -61,11 +61,33 @@ class Action(BaseModel):
     category: Optional[ActionCategory] = ActionCategory.manual
 
 
+class EscalationAction(BaseModel):
+    """A fallback action recommended alongside (never instead of) a
+    low-confidence Goal -- see escalation.py."""
+    deeplink: str
+    message: str
+    description: str
+    originalType: Optional[str] = None
+
+
+class EscalationRecommendation(BaseModel):
+    """Attached to a Goal when the execution path that produced it judged
+    its own confidence too low to hand over a fix with certainty. The
+    plan is still returned in full -- this is an additive caveat, not a
+    replacement. See escalation.py for the full design rationale and why
+    the offline and LLM paths use different confidence signals to decide
+    whether to attach one."""
+    recommended: bool
+    reason: str
+    action: EscalationAction
+
+
 class Goal(BaseModel):
     goal: str     # Exact syntax: "Follow these steps to perform this <Topic> Troubleshooting"
     title: str    # 2-3 words, sentence case (e.g. "Battery fast drain")
     actions: List[Action]
     score: float  # 0.0 - 1.0 confidence
+    escalation: Optional[EscalationRecommendation] = None
 
 
 class ContextDeeplinkResponse(BaseModel):

@@ -24,6 +24,8 @@ import re
 import string
 from dataclasses import dataclass, field
 
+from escalation import build_escalation_recommendation
+
 # ---------------------------------------------------------------------
 # Query enrichment (offline replacement for Stage 0 / prompts.STAGE0_*)
 # ---------------------------------------------------------------------
@@ -443,6 +445,18 @@ def make_description(benefit_phrase: str) -> str:
 # ---------------------------------------------------------------------
 
 NO_MATCH_SECTION_THRESHOLD = 0.12
+
+# A match whose relevance barely clears NO_MATCH_SECTION_THRESHOLD is still
+# shown (rejecting it outright would be worse -- see escalation.py's
+# module docstring for the full rationale), but flagged with an
+# escalation recommendation rather than presented with the same silent
+# confidence as a well-grounded match. 2x the no-match floor is a
+# deliberately conservative multiplier: measured against the 20 real
+# official queries, only the single thinnest-margin match (relevance
+# 0.214, just above the 0.12 floor) falls below it -- see
+# tests/test_escalation.py::test_escalation_ceiling_is_rare_on_real_data.
+ESCALATION_RELEVANCE_CEILING = NO_MATCH_SECTION_THRESHOLD * 2
+
 _MANUAL_LEAD_KEYWORDS = ("visit a samsung", "service center", "contact samsung",
                           "schedule a repair", "walk-in service")
 _CRITICAL_LEAD_KEYWORDS = (
@@ -513,12 +527,20 @@ def _build_single_goal(core: str, siis_response: str) -> dict | None:
 
     title = make_title(core)
     score = round(min(0.99, 0.55 + 0.45 * best_relevance), 2)
-    return {
+    goal: dict = {
         "goal": make_goal(title),
         "title": title,
         "score": score,
         "actions": actions,
     }
+    if best_relevance < ESCALATION_RELEVANCE_CEILING:
+        goal["escalation"] = build_escalation_recommendation(
+            f"This match only narrowly cleared our relevance bar for this complaint "
+            f"(relevance {best_relevance:.2f} vs. a {ESCALATION_RELEVANCE_CEILING:.2f} "
+            f"comfort margin) -- it may not be the right fix. Consider running a full "
+            f"device diagnostic, or contacting Samsung Support if these steps don't help."
+        )
+    return goal
 
 
 def offline_extract(technical_query: str, siis_response: str, core_problem: str | None = None) -> dict:

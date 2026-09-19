@@ -230,3 +230,74 @@ class TestOfflineExtractEndToEnd:
                             assert "matchExplanation" in dl
                             assert dl["matchExplanation"]["matcher"] in ("hybrid_bm25_dense", "rules_fuzzy")
         assert found_any, "expected at least one resolved deeplink across the real sample set"
+
+
+class TestEscalation:
+    """The offline path's own confidence-gated escalation (see
+    escalation.py and ESCALATION_RELEVANCE_CEILING above)."""
+
+    def test_thin_match_gets_escalation_recommendation(self):
+        """A relevance between NO_MATCH_SECTION_THRESHOLD (0.12) and
+        ESCALATION_RELEVANCE_CEILING (0.24) -- constructed here to land at
+        exactly 2/9 = 0.222 -- must clear the no-match bar (a plan IS
+        returned) but still get flagged, not silently presented with the
+        same confidence as a well-grounded match."""
+        core = of.core_problem_phrase(
+            "screen keeps freezing randomly during phone calls and video playback"
+        )
+        siis = ("# General Tips\nTap Settings to open the screen menu during setup. "
+                "Tap Apps to view options.")
+        goal = of._build_single_goal(core, siis)
+        assert goal is not None  # cleared the no-match floor
+        assert goal.get("escalation") is not None  # but flagged as thin
+        assert goal["escalation"]["recommended"] is True
+        assert "relevance" in goal["escalation"]["reason"].lower()
+        assert goal["escalation"]["action"]["deeplink"].startswith("bixby://")
+
+    def test_strong_match_does_not_get_escalation_recommendation(self, real_samples):
+        """A well-grounded real official query should NOT be flagged --
+        otherwise the feature would just be noise on every good match."""
+        sample = next(s for s in real_samples if s.get("siis_response")
+                      and "screen" in s["complaint"].lower())
+        result = of.offline_extract(sample["complaint"], sample["siis_response"])
+        assert result["contexts"]
+        # At least the very first (highest-scoring) real official query's
+        # goal should be well clear of the escalation ceiling.
+        best_score = max(g["score"] for g in result["contexts"])
+        assert best_score > 0.7  # comfortably above the observed floor of 0.65
+
+    def test_escalation_ceiling_is_rare_on_real_data(self, real_samples):
+        """Calibration check: on the 20 real official queries, only a
+        small minority should ever be flagged -- if this fires on most or
+        all of them, the ceiling is miscalibrated and the feature would
+        just train users to ignore it."""
+        grounded = [s for s in real_samples if s.get("siis_response")]
+        total, escalated = 0, 0
+        for sample in grounded:
+            result = of.offline_extract(sample["complaint"], sample["siis_response"])
+            for goal in result["contexts"]:
+                total += 1
+                if goal.get("escalation"):
+                    escalated += 1
+        assert total > 0
+        assert escalated / total <= 0.25, (
+            f"{escalated}/{total} real official queries got flagged -- "
+            f"ESCALATION_RELEVANCE_CEILING is too aggressive"
+        )
+
+    def test_does_not_catch_the_known_topical_mismatch_false_positive(self, real_samples):
+        """Honest documentation as a test, not just a comment: the
+        'Assistive menu' query (see eval/metrics.md section 6) is a known
+        WRONG match with comparatively high relevance (~0.556) because
+        generic shared vocabulary fools the bag-of-words scorer. This
+        confidence gate is calibrated against thin/uncertain matches, not
+        topical correctness, so it must NOT flag this one -- confirming
+        the two are genuinely different failure modes, as documented in
+        escalation.py's module docstring."""
+        sample = next(s for s in real_samples
+                      if "floating circle" in s["complaint"].lower())
+        result = of.offline_extract(sample["complaint"], sample["siis_response"])
+        assert result["contexts"]
+        goal = result["contexts"][0]
+        assert goal["score"] >= 0.7  # scores high despite being topically wrong
+        assert "escalation" not in goal

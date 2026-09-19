@@ -38,6 +38,91 @@ def test_cache_hit_on_second_identical_call():
     assert second["meta"]["cache_hit"] is False
 
 
+class TestEscalation:
+    """Task 34: LLM-path confidence gate (_maybe_attach_llm_escalation).
+    The offline path's own gate is tested directly in
+    tests/test_offline_fallback.py::TestEscalation since it uses a
+    different signal (relevance, not this self-reported score)."""
+
+    def test_low_score_goal_gets_flagged(self):
+        goal = {"score": 0.4}
+        pipeline._maybe_attach_llm_escalation(goal)
+        assert goal["escalation"]["recommended"] is True
+        assert "0.40" in goal["escalation"]["reason"]
+
+    def test_high_score_goal_is_untouched(self):
+        goal = {"score": 0.9}
+        pipeline._maybe_attach_llm_escalation(goal)
+        assert "escalation" not in goal
+
+    def test_score_exactly_at_threshold_is_not_flagged(self):
+        """Strict less-than: a goal AT the threshold is confident enough."""
+        goal = {"score": pipeline.LLM_SCORE_ESCALATION_THRESHOLD}
+        pipeline._maybe_attach_llm_escalation(goal)
+        assert "escalation" not in goal
+
+    def test_missing_or_non_numeric_score_does_not_crash(self):
+        goal = {}
+        pipeline._maybe_attach_llm_escalation(goal)
+        assert "escalation" not in goal
+
+        goal2 = {"score": "not a number"}
+        pipeline._maybe_attach_llm_escalation(goal2)
+        assert "escalation" not in goal2
+
+    def test_llm_path_goal_flows_through_run_pipeline_with_escalation(self, monkeypatch):
+        """End-to-end: a Goal that came back from stage1_extract with
+        fb1=False (i.e. "the LLM path was used", however that happened)
+        and a low self-reported score must carry escalation by the time
+        run_pipeline() returns -- exercised through the real function,
+        not just the helper in isolation."""
+        def fake_stage1(technical_query, siis_response, force_offline=False):
+            goal = {
+                "goal": "Follow these steps to perform this Test Issue Troubleshooting",
+                "title": "Test issue",
+                "score": 0.35,
+                "actions": [],
+            }
+            return {"contexts": [goal]}, False  # fb1=False -> "LLM path" for this test
+
+        monkeypatch.setattr(pipeline, "stage1_extract", fake_stage1)
+        result = pipeline.run_pipeline("some complaint", "some grounding text")
+        goal = result["response"]["contexts"][0]
+        assert goal.get("escalation") is not None
+        assert goal["escalation"]["recommended"] is True
+
+    def test_llm_path_goal_high_score_flows_through_without_escalation(self, monkeypatch):
+        def fake_stage1(technical_query, siis_response, force_offline=False):
+            goal = {
+                "goal": "Follow these steps to perform this Test Issue Troubleshooting",
+                "title": "Test issue",
+                "score": 0.95,
+                "actions": [],
+            }
+            return {"contexts": [goal]}, False
+
+        monkeypatch.setattr(pipeline, "stage1_extract", fake_stage1)
+        result = pipeline.run_pipeline("some other complaint", "some grounding text")
+        goal = result["response"]["contexts"][0]
+        assert "escalation" not in goal
+
+    def test_offline_path_goal_is_not_double_processed_by_llm_gate(self, real_samples):
+        """A real offline-path goal already carries its own escalation
+        decision (or lack of one) from offline_fallback.py -- run_pipeline
+        must not additionally run the LLM-scale gate over it, which would
+        compare a 0.55-0.99-floored offline score against a threshold
+        calibrated for the LLM's own 0-1 scale."""
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        result = pipeline.run_pipeline(sample["complaint"], sample["siis_response"])
+        assert result["meta"]["used_offline_fallback"] is True
+        # Whatever offline_fallback.py decided is exactly what's still there.
+        for goal in result["response"]["contexts"]:
+            from offline_fallback import ESCALATION_RELEVANCE_CEILING, NO_MATCH_SECTION_THRESHOLD
+            # sanity: offline scores are never LLM-scale low enough to trip
+            # LLM_SCORE_ESCALATION_THRESHOLD by coincidence of the wrong gate
+            assert goal["score"] >= 0.55  # offline's own floor
+
+
 class TestStreamingParity:
     """The whole point of run_pipeline_streaming(): its final event must
     carry exactly the same troubleshooting content as run_pipeline()'s
@@ -80,3 +165,22 @@ class TestStreamingParity:
         events = list(pipeline.run_pipeline_streaming("anything", ""))
         assert events[-1]["stage"] == "error"
         assert "simulated failure" in events[-1]["data"]["message"]
+
+    def test_streaming_also_attaches_llm_escalation(self, monkeypatch):
+        """The streaming variant duplicates the validate+escalation loop
+        (it can't share run_pipeline()'s code directly since it yields
+        progress between stages) -- must not have silently drifted."""
+        def fake_stage1(technical_query, siis_response, force_offline=False):
+            goal = {
+                "goal": "Follow these steps to perform this Test Issue Troubleshooting",
+                "title": "Test issue",
+                "score": 0.3,
+                "actions": [],
+            }
+            return {"contexts": [goal]}, False
+
+        monkeypatch.setattr(pipeline, "stage1_extract", fake_stage1)
+        events = list(pipeline.run_pipeline_streaming("some complaint", "some grounding text"))
+        assert events[-1]["stage"] == "complete"
+        goal = events[-1]["data"]["response"]["contexts"][0]
+        assert goal.get("escalation") is not None

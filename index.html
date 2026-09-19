@@ -661,10 +661,37 @@ function renderContexts(contexts, query) {
             <h2 class="font-display font-bold text-lg text-white leading-snug">${escapeHtml(goal.goal || goal.title || 'Diagnosis')}</h2>
           </div>
         </div>
+        ${escalationBanner(goal.escalation)}
         <div>${timelineHtml}</div>
       </div>
     `;
   }).join('');
+}
+
+// Confidence-gated escalation (see escalation.py): the plan above is
+// still shown in full -- this is an additive caveat + backup action, not
+// a replacement, so it renders as a banner ABOVE the timeline rather than
+// hiding or graying out the steps.
+function escalationBanner(escalation) {
+  if (!escalation || !escalation.recommended) return '';
+  const action = escalation.action || {};
+  return `
+    <div class="mb-5 bg-amber/10 border border-amber/40 rounded-xl px-4 py-3.5">
+      <div class="flex items-start gap-2.5">
+        <span class="text-amber text-sm leading-none mt-0.5">&#9888;</span>
+        <div class="flex-1">
+          <p class="text-amber font-display font-semibold text-xs mb-1">Lower-confidence match</p>
+          <p class="text-inkdim text-xs mb-2.5">${escapeHtml(escalation.reason || '')}</p>
+          ${action.deeplink ? `
+            <div class="bg-void border border-line rounded-lg px-3 py-2.5">
+              <p class="text-amber text-xs font-mono break-all">↳ ${escapeHtml(action.deeplink)}</p>
+              <p class="text-inkdim text-xs mt-1">${escapeHtml(action.message || action.description || '')}</p>
+            </div>
+          ` : ''}
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 // Telemetry drawer

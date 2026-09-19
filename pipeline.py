@@ -26,6 +26,7 @@ from validators import validate_goal_object, strip_urls
 from cache import get_cached, set_cached
 from request_log import append_log
 from deeplink_matching import match_and_build_deeplink
+from escalation import build_escalation_recommendation, LLM_SCORE_ESCALATION_THRESHOLD
 import offline_fallback
 
 _PLACEHOLDER_KEYS = {None, "", "your_key_here"}
@@ -94,6 +95,25 @@ def stage1_extract(technical_query: str, siis_response: str = "",
 # ---------------------------------------------------------------------------
 # Stage 2 — Deeplink matching (done in CODE, never trust the LLM with real URIs)
 # ---------------------------------------------------------------------------
+
+def _maybe_attach_llm_escalation(goal: dict) -> None:
+    """LLM-path counterpart to offline_fallback.py's own escalation gate
+    (see escalation.py's module docstring for why the two paths use
+    different signals). Only called for goals that came from the LLM path
+    -- an offline-path goal already carries its own escalation object
+    (attached inside offline_fallback._build_single_goal, using relevance
+    rather than this self-reported score), and re-checking it here with a
+    threshold calibrated for the LLM's 0-1 confidence scale would be
+    comparing incompatible numbers."""
+    score = goal.get("score")
+    if isinstance(score, (int, float)) and score < LLM_SCORE_ESCALATION_THRESHOLD:
+        goal["escalation"] = build_escalation_recommendation(
+            f"The model's own confidence in this match was {score:.2f} (below our "
+            f"{LLM_SCORE_ESCALATION_THRESHOLD:.2f} comfort threshold) -- it may not be "
+            f"the right fix. Consider running a full device diagnostic, or contacting "
+            f"Samsung Support if these steps don't help."
+        )
+
 
 def enrich_with_deeplinks(goal_dict: dict, variant: str = "hybrid") -> dict:
     """Stage 2. The offline fallback path already attaches deeplinks
@@ -168,6 +188,8 @@ def run_pipeline(raw_complaint: str, siis_response: str = "") -> dict:
             action["description"] = strip_urls(action["description"])
             for sg in action.get("stepGroups", []):
                 sg["steps"] = [strip_urls(s) for s in sg["steps"]]
+        if not fb1:
+            _maybe_attach_llm_escalation(goal)
 
     # Stage 2: attach deeplinks (same code path regardless of Stage0/1 source)
     contexts = [enrich_with_deeplinks(g) for g in contexts]
@@ -294,6 +316,8 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = ""):
                 action["description"] = strip_urls(action["description"])
                 for sg in action.get("stepGroups", []):
                     sg["steps"] = [strip_urls(s) for s in sg["steps"]]
+            if not fb1:
+                _maybe_attach_llm_escalation(goal)
         yield {"stage": "validate", "status": "done", "data": {"validation_errors": all_errors}}
 
         # Stage 2: attach deeplinks

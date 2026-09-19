@@ -3,8 +3,8 @@ import pytest
 from pydantic import ValidationError
 
 from schema import (
-    Action, ActionCategory, BatchTroubleshootRequest, FeedbackRequest, Goal,
-    StepGroup, TroubleshootRequest,
+    Action, ActionCategory, BatchTroubleshootRequest, EscalationAction,
+    EscalationRecommendation, FeedbackRequest, Goal, StepGroup, TroubleshootRequest,
 )
 
 
@@ -49,6 +49,32 @@ def test_feedback_request_requires_deeplink_action_helpful():
     fb = FeedbackRequest(deeplink="bixby://masked/act/x", action_name="Wifi Settings", helpful=False)
     assert fb.query is None
     assert fb.comment is None
+
+
+def test_goal_accepts_optional_escalation():
+    goal = Goal(
+        goal="Follow these steps to perform this Battery Troubleshooting",
+        title="Battery drain",
+        score=0.4,
+        actions=[],
+        escalation=EscalationRecommendation(
+            recommended=True,
+            reason="low confidence",
+            action=EscalationAction(
+                deeplink="bixby://masked/act/5930a08d3d",
+                message="Run Full Device Diagnostic",
+                description="Runs a full device diagnostic.",
+            ),
+        ),
+    )
+    assert goal.escalation.recommended is True
+    assert goal.escalation.action.deeplink.startswith("bixby://")
+
+    goal_without = Goal(
+        goal="Follow these steps to perform this Battery Troubleshooting",
+        title="Battery drain", score=0.9, actions=[],
+    )
+    assert goal_without.escalation is None
 
 
 def test_batch_request_enforces_one_to_twenty_items():
