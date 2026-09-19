@@ -5,6 +5,8 @@ judge clones the repo and runs it with no LLM_API_KEY configured (the
 README's advertised "works with zero setup" path), and it's what backs
 every number in eval/metrics.md.
 """
+import re
+
 import offline_fallback as of
 
 
@@ -24,6 +26,92 @@ class TestQueryNormalization:
         assert "is" not in toks
         assert "battery" in toks
         assert "draining" in toks
+
+
+class TestHinglishNormalization:
+    """Task 32: a lightweight phrasebook so Hinglish complaints don't
+    silently lose relevance to noise tokens the English SIIS text can
+    never match (see the long comment above _HINGLISH_LEXICON in
+    offline_fallback.py for the mechanism)."""
+
+    def test_detects_hinglish_with_two_or_more_markers(self):
+        assert of.detect_hinglish("phone bahuth garam ho rha hai restart ke baad bhi")
+        assert of.detect_hinglish("mera screen kaam nahi kar raha")
+
+    def test_does_not_flag_plain_english_as_hinglish(self):
+        assert not of.detect_hinglish("my battery drains too fast after the last update")
+        assert not of.detect_hinglish("screen flickers and touch is laggy")
+
+    def test_translate_converts_content_words_and_drops_glue_words(self):
+        out = of.translate_hinglish("phone bahuth garam ho rha hai")
+        assert "hot" in out.lower()   # garam -> hot (content word, kept)
+        assert "very" in out.lower()  # bahuth -> very
+        assert "rha" not in out.lower()
+        assert "ho" not in out.lower().split()
+
+    def test_translate_does_not_corrupt_the_english_article_the(self):
+        """Regression test: an early version of the lexicon mapped the
+        Hindi plural-past 'the' (were) onto the identical spelling of the
+        English article 'the' -- which would have silently corrupted any
+        Hinglish-flagged sentence that also used the ordinary word "the"
+        (extremely common in code-mixed text). Must never translate it."""
+        out = of.translate_hinglish("the screen is garam and bahut kharab")
+        assert re.search(r"\bthe\b", out, re.IGNORECASE)
+        assert "were" not in out.lower()
+
+    def test_normalize_query_applies_translation_only_when_detected(self):
+        translated = of.normalize_query("phone bahuth garam ho rha hai restart ke baad bhi")
+        assert "hot" in translated.lower()
+
+        untouched = of.normalize_query("my battery drains too fast")
+        assert "battery drains too fast" in untouched.lower()
+
+    def test_offline_enrich_reports_detected_language(self):
+        hi = of.offline_enrich("phone bahuth garam ho rha hai restart ke baad bhi")
+        assert hi["detected_language"] == "hi"
+
+        en = of.offline_enrich("battery drains too fast and camera lags")
+        assert en["detected_language"] == "en"
+
+    def test_hinglish_complaint_grounds_against_same_siis_section_as_english(self, real_samples):
+        """The real payoff: a heavily Hindi-glue-worded complaint that
+        would fall BELOW the no-match relevance threshold untranslated
+        must clear it once translated, and land on the same SIIS section
+        a plain-English complaint about the same symptom would."""
+        sample = next(s for s in real_samples
+                      if s.get("siis_response") and "screen" in s["complaint"].lower())
+        siis = sample["siis_response"]
+        sections = of.parse_sections(siis)
+
+        def best_relevance(core):
+            scored = [of.section_relevance(core, sec) for sec in sections]
+            whole = of.section_relevance(core, of.Section(header="", body=siis))
+            return max(max(scored, default=0.0), whole)
+
+        hinglish = (
+            "mera jo phone hai uska screen kabhi kabhi achanak bilkul blank ho jata hai, "
+            "jab bhi main kuch dekhne ki koshish karta hoon to kuch dikhta hi nahi hai, "
+            "phir thodi der baad wapas theek ho jata hai lekin dubara wahi dikkat ho jati hai"
+        )
+        assert of.detect_hinglish(hinglish)
+
+        core_translated = of.core_problem_phrase(hinglish)
+        relevance_translated = best_relevance(core_translated)
+        assert relevance_translated >= of.NO_MATCH_SECTION_THRESHOLD
+
+        result = of.offline_extract(of.normalize_query(hinglish), siis)
+        assert result["contexts"], "translated Hinglish complaint should ground against real SIIS text"
+
+    def test_english_only_behavior_is_completely_unchanged(self, real_samples):
+        """No regression: every already-passing official English query
+        must produce byte-identical offline_extract() output whether or
+        not the Hinglish detection/translation code exists in the path
+        (it should simply never fire for these)."""
+        for sample in real_samples:
+            assert not of.detect_hinglish(sample["complaint"])
+            result = of.offline_extract(of.normalize_query(sample["complaint"]),
+                                         sample.get("siis_response", ""))
+            assert "contexts" in result
 
 
 class TestParaphraseGeneration:

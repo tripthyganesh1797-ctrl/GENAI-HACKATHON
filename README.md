@@ -40,15 +40,17 @@ flowchart TD
         EP2["GET /v1/troubleshoot/stream (SSE)"]
         EP3["POST /v1/feedback"]
         EP4["GET /stats · /health (rate-limit exempt)"]
-        MW --> EP1 & EP2 & EP3 & EP4
+        EP5["POST /v1/troubleshoot/batch\n(1-20 items, own rate limit)"]
+        MW --> EP1 & EP2 & EP3 & EP4 & EP5
     end
 
     EP1 --> S0
     EP2 --> S0
+    EP5 -. "runs the full pipeline\nonce per item" .-> S0
 
     S0{"Stage 0: enrich\nLLM_API_KEY set?"}
     S0 -- "yes, LLM reachable" --> L0["LLM: normalise + translate\n+ 8-10 paraphrases\n(prompts.py / llm_client.py)"]
-    S0 -- "no key, or call/JSON-parse fails" --> O0["offline_fallback.py\nrule-based enrich, $0, English-only"]
+    S0 -- "no key, or call/JSON-parse fails" --> O0["offline_fallback.py\nrule-based enrich, $0, + Hinglish phrasebook"]
 
     L0 --> CACHE
     O0 --> CACHE
@@ -300,7 +302,9 @@ deeplink, with the overlapping keywords as chips.
 
 See `eval/metrics.md` section 6 ("Known Edge Cases & System Limitations")
 for the full, honest list, generated from real measured runs — including
-why the offline fallback is English-only, why this sandbox's ablation
+the offline fallback's narrow Hindi/Hinglish phrasebook (helps the
+common code-mixed case, isn't general multi-language support -- the LLM
+path is still the robust option for that), why this sandbox's ablation
 numbers favor the rules-based matcher (HuggingFace Hub is unreachable
 here, so the hybrid matcher runs on TF-IDF/SVD rather than real
 sentence-transformer embeddings — re-run `eval/run_ablation.py` on a

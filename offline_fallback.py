@@ -56,8 +56,123 @@ def _expand_contractions(text: str) -> str:
     return out
 
 
+# ---------------------------------------------------------------------
+# Lightweight Hindi/Hinglish normalization (offline path only)
+# ---------------------------------------------------------------------
+# The LLM path (prompts.py) handles any language by asking the model to
+# translate internally -- this offline path has no model to ask, and a
+# real MT model/API is exactly the kind of network dependency this file
+# exists to avoid. But real-world Hinglish device complaints are almost
+# always heavily code-mixed: the domain nouns that matter for matching
+# ("screen", "battery", "camera", "wifi", "restart") are already English;
+# it's the connective/adjective words that are romanized Hindi ("bahut
+# garam" = "very hot", "chalu nahi ho raha" = "not turning on").
+#
+# section_relevance() below is bag-of-words overlap: len(intersection) /
+# len(query_tokens). Left untranslated, every Hindi glue word ("hai",
+# "raha", "nahi", "bahut"...) becomes a query token that can NEVER match
+# the English SIIS reference text -- it inflates the denominator without
+# ever touching the numerator, silently sinking relevance for an
+# otherwise-clear complaint. A small phrasebook fixes exactly that: pure
+# grammar/glue words translate to "" (dropped, same effect as never
+# having been a token), and content-bearing words (adjectives describing
+# the actual symptom) translate to their real English equivalent so they
+# CAN match. This is a phrasebook, not a translator -- word-for-word,
+# not grammatically correct, and deliberately narrow (~80 entries
+# covering common device-complaint vocabulary) rather than an attempt at
+# general Hindi support. Anything not in the dictionary passes through
+# untouched, exactly like an English-only query would.
+_HINGLISH_LEXICON: dict[str, str] = {
+    # symptom adjectives / states -- kept as real English content words
+    # so they can match the SIIS text's own vocabulary
+    "garam": "hot", "garm": "hot", "garmi": "heat", "garmy": "hot",
+    "thanda": "cold", "thand": "cold",
+    "kharab": "broken", "kharaab": "broken", "kharob": "broken",
+    "toot": "broken", "tuta": "broken", "tuti": "broken",
+    "phat": "cracked", "phata": "cracked", "phatt": "cracked", "phati": "cracked",
+    "dheere": "slow", "dhime": "slow", "dhima": "slow",
+    "purana": "old", "naya": "new",
+    "atak": "stuck", "atka": "stuck", "atki": "stuck", "hang": "hang",
+    "ruk": "stop", "rukta": "stops", "rukti": "stops", "ruk gaya": "stopped",
+    "khulta": "opens", "khulti": "opens", "khul": "open",
+    "khatam": "drained", "khatm": "drained", "khali": "empty",
+    "jhilmila": "flicker", "jhilmilahat": "flickering", "jhilmilate": "flickering", "jhilmilata": "flickering",
+    "gayab": "disappeared", "gaayab": "disappeared",
+    "bilkul": "completely", "poori": "completely", "pura": "completely",
+    "kaam": "work", "kaamkarna": "work",
+    "girta": "drops", "girti": "drops",
+    # negation / intensifiers / frequency -- translated straight to a
+    # word already in _STOPWORDS below, so significant_tokens() drops
+    # them the same way it drops "the"/"is"/"after" for an English query
+    "nahi": "not", "nahin": "not", "nhi": "not",
+    "bahut": "very", "bahuth": "very", "bohot": "very", "bohut": "very", "bhut": "very",
+    "phir": "again", "wapas": "again", "dubara": "again", "dobara": "again",
+    "baad": "after", "pehle": "before", "phle": "before", "pahle": "before",
+    "bhi": "also", "sirf": "only",
+    "khud": "automatically", "apneaap": "automatically",
+    "turant": "immediately", "abhi": "immediately",
+    "kabhi": "sometimes", "hamesha": "always", "harbaar": "always", "harbar": "always",
+    "mera": "my", "meri": "my", "mere": "my", "mujhe": "my",
+    "aur": "and", "ya": "or", "lekin": "but", "par": "but",
+    "kyun": "why", "kyu": "why", "kaise": "how", "kab": "when", "jab": "when", "kahan": "where",
+    "hai": "is", "hain": "are", "tha": "was", "thi": "was",
+    # NOTE: deliberately NOT mapping the Hindi plural-past "the" (थे,
+    # "were") -- it's spelled identically to the English article "the",
+    # and code-mixed Hinglish text uses that article constantly. Mapping
+    # it would silently corrupt "the screen is garam" into "were screen
+    # is hot". A handful of missed translations is a far smaller cost
+    # than corrupting ordinary English text.
+    "raha": "", "rha": "", "rahi": "", "rhi": "", "rahe": "", "rhe": "",
+    "gaya": "", "gayi": "", "gaye": "",
+    # pronouns / relative-clause words -- pure grammar, no diagnostic
+    # content, so dropped just like "raha"/"ho" above
+    "jo": "", "uska": "", "uski": "", "uske": "", "iska": "", "iski": "", "iske": "",
+    "kuch": "", "yeh": "", "voh": "", "wo": "", "wahi": "same",
+    "koshish": "try", "dekhne": "see", "dekh": "see", "dikhta": "visible",
+    "dikhna": "visible", "dikhti": "visible",
+    "ho": "", "hoon": "am", "hun": "am",
+    "kar": "", "karta": "", "karti": "", "karte": "",
+    "pareshan": "frustrated", "pareshaan": "frustrated",
+    "samajh": "understand",
+    "dikkat": "problem", "dikkath": "problem",
+    "ajeeb": "strange",
+    "band": "off", "bandh": "off", "chalu": "on",
+}
+
+# Marker words strong enough that seeing 2+ of them in a query is a
+# reliable (if crude) signal the text is romanized Hindi/Hinglish rather
+# than English that happens to share one token by coincidence.
+_HINGLISH_MARKERS = frozenset(_HINGLISH_LEXICON)
+
+
+def detect_hinglish(raw_query: str) -> bool:
+    """Heuristic, not a real language detector -- see module comment
+    above translate_hinglish(). Requires 2+ distinct marker hits so a
+    single coincidental overlap (e.g. an English sentence that happens to
+    contain "hi") doesn't misfire; a false negative just means the
+    complaint runs through the normal English-only path unchanged (safe
+    -- exactly today's behavior), so this stays conservative on purpose."""
+    tokens = set(re.findall(r"[a-zA-Z']+", raw_query.lower()))
+    return len(tokens & _HINGLISH_MARKERS) >= 2
+
+
+def translate_hinglish(text: str) -> str:
+    """Word-for-word substitution against _HINGLISH_LEXICON, case-
+    insensitive. Not grammatically correct English -- doesn't need to be,
+    since every downstream consumer (significant_tokens(),
+    section_relevance(), core_problem_phrase()) only ever looks at the
+    bag of words, never sentence structure."""
+    def repl(m: re.Match) -> str:
+        word = m.group(0)
+        translated = _HINGLISH_LEXICON.get(word.lower())
+        return translated if translated is not None else word
+    return re.sub(r"[a-zA-Z']+", repl, text)
+
+
 def normalize_query(raw_query: str) -> str:
     q = re.sub(r"^\s*\d+[\.\)]\s*", "", raw_query.strip())
+    if detect_hinglish(q):
+        q = translate_hinglish(q)
     q = _expand_contractions(q).replace("*", "")
     q = re.sub(r"\s+", " ", q).strip().rstrip(".! ")
     return q
@@ -124,10 +239,16 @@ def generate_paraphrases(raw_query: str, n: int = 10) -> list[str]:
 
 
 def offline_enrich(raw_complaint: str) -> dict:
-    """Drop-in replacement for stage0_enrich()'s return shape."""
+    """Drop-in replacement for stage0_enrich()'s return shape. Unlike the
+    LLM path (which reports whatever language the model detects, e.g.
+    'es', 'fr', ...), detected_language here is necessarily narrower --
+    it can only ever say "hi" (the translate_hinglish() heuristic fired)
+    or "en" (it didn't), since that phrasebook is the only non-English
+    handling this offline path has."""
     return {
         "technical_query": normalize_query(raw_complaint),
         "query_variations": generate_paraphrases(raw_complaint),
+        "detected_language": "hi" if detect_hinglish(raw_complaint) else "en",
     }
 
 
