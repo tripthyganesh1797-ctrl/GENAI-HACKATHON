@@ -163,6 +163,21 @@ class BatchTroubleshootRequest(BaseModel):
     items: List[BatchTroubleshootItem] = Field(..., min_length=1, max_length=20)
 
 
+class ReportRequest(BaseModel):
+    """POST /v1/report (Task 38) -- packages an already-computed
+    troubleshooting result (the exact response body a prior
+    /v1/troubleshoot or /v1/troubleshoot/stream call returned) into a
+    compact, shareable report. Takes the result rather than re-running the
+    pipeline: the caller already paid for that computation once, and
+    formatting is a pure function of data it already has -- see report.py.
+    `result` is intentionally typed as a plain dict rather than
+    TroubleshootResponse: it's round-tripping a response this same service
+    already produced and validated once, so re-validating it strictly here
+    would only reject a caller's minor extra/missing field for no benefit."""
+    result: Dict = Field(..., description="The exact response body from /v1/troubleshoot(/stream)")
+    format: str = Field("markdown", description="\"markdown\" or \"html\"")
+
+
 class FeedbackRequest(BaseModel):
     """POST /v1/feedback -- thumbs up/down on one matched deeplink from a
     previous /v1/troubleshoot(/stream) response. Drives the adaptive

@@ -453,3 +453,76 @@ class TestSessionMemory:
         body = second.json()
         assert body["meta"]["cache_hit"] is False
         assert len(body["meta"]["session_notes"]) >= 1
+
+
+class TestReportEndpoint:
+    """Task 38: POST /v1/report packages an already-computed troubleshoot
+    result into a shareable Markdown/HTML report -- see report.py."""
+
+    def test_markdown_report_from_a_real_troubleshoot_result(self, client, real_samples):
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        first = client.post("/v1/troubleshoot", json={
+            "query": sample["complaint"], "siis_response": sample["siis_response"],
+        })
+        assert first.status_code == 200
+
+        res = client.post("/v1/report", json={"result": first.json(), "format": "markdown"})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["format"] == "markdown"
+        assert body["content"].startswith("# Diagnostic Report")
+        assert sample["complaint"] in body["content"]
+        assert "request_id" in body
+        assert body["request_id"] == res.headers["X-Request-ID"]
+
+    def test_html_report_from_a_real_troubleshoot_result(self, client, real_samples):
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        first = client.post("/v1/troubleshoot", json={
+            "query": sample["complaint"], "siis_response": sample["siis_response"],
+        })
+        res = client.post("/v1/report", json={"result": first.json(), "format": "html"})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["format"] == "html"
+        assert body["content"].startswith("<!DOCTYPE html>")
+
+    def test_format_defaults_to_markdown_when_omitted(self, client, real_samples):
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        first = client.post("/v1/troubleshoot", json={
+            "query": sample["complaint"], "siis_response": sample["siis_response"],
+        })
+        res = client.post("/v1/report", json={"result": first.json()})
+        assert res.status_code == 200
+        assert res.json()["format"] == "markdown"
+
+    def test_unsupported_format_is_a_structured_400(self, client, real_samples):
+        sample = real_samples[0]
+        first = client.post("/v1/troubleshoot", json={"query": sample["complaint"]})
+        res = client.post("/v1/report", json={"result": first.json(), "format": "pdf"})
+        assert res.status_code == 400
+        body = res.json()
+        assert "request_id" in body["error"]
+
+    def test_no_match_result_still_produces_a_report(self, client, real_samples):
+        sample = real_samples[0]
+        first = client.post("/v1/troubleshoot", json={"query": sample["complaint"]})  # no siis_response
+        assert first.json()["response"]["contexts"] == []
+        res = client.post("/v1/report", json={"result": first.json()})
+        assert res.status_code == 200
+        assert "No matching troubleshooting plan" in res.json()["content"]
+
+    def test_missing_result_field_is_a_validation_error(self, client):
+        res = client.post("/v1/report", json={"format": "markdown"})
+        assert res.status_code == 422
+
+    def test_report_generation_does_not_write_a_request_log_entry(self, client, real_samples):
+        """report.py is a pure formatter -- calling /v1/report must not
+        itself append to request_log.jsonl (only real /v1/troubleshoot
+        calls should count toward /stats)."""
+        import request_log
+        sample = real_samples[0]
+        first = client.post("/v1/troubleshoot", json={"query": sample["complaint"]})
+        count_before = len(request_log.read_all_logs())
+        client.post("/v1/report", json={"result": first.json()})
+        count_after = len(request_log.read_all_logs())
+        assert count_after == count_before

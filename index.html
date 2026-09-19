@@ -238,6 +238,11 @@ const API_BASE = 'http://localhost:8000';
 // reloading the page starts a new session on purpose.
 const SESSION_ID = `demo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
+// Task 38: the full last /v1/troubleshoot response, kept around purely so
+// the "share report" buttons can POST it to /v1/report without re-running
+// the pipeline. In-memory only, same as SESSION_ID above -- never persisted.
+let lastResult = null;
+
 const complaintInput = document.getElementById('complaintInput');
 const diagnoseBtn = document.getElementById('diagnoseBtn');
 const resultContainer = document.getElementById('resultContainer');
@@ -478,6 +483,7 @@ async function runDiagnosis() {
     }
 
     const data = await res.json();
+    lastResult = data;
     updateMetrics(data.meta || {});
     renderContexts(data.response?.contexts || [], query, data.meta?.device_context_notes || [],
                    data.meta?.session_notes || []);
@@ -713,7 +719,7 @@ function renderContexts(contexts, query, deviceContextNotes = [], sessionNotes =
     return;
   }
 
-  resultContainer.innerHTML = notesHtml + contexts.map(goal => {
+  resultContainer.innerHTML = notesHtml + shareReportBar() + contexts.map(goal => {
     const scorePct = Math.round((goal.score || 0) * 100);
     const actions = goal.actions || [];
 
@@ -757,6 +763,73 @@ function renderContexts(contexts, query, deviceContextNotes = [], sessionNotes =
       </div>
     `;
   }).join('');
+}
+
+// Task 38: packages the last full pipeline result (report.py, via
+// POST /v1/report) into a shareable Markdown or HTML report -- a copy
+// button for pasting into a support ticket/chat, a download button for a
+// self-contained .html file to forward or open standalone.
+function shareReportBar() {
+  return `
+    <div class="flex items-center gap-2 mb-4 flex-wrap">
+      <button onclick="copyMarkdownReport()"
+        class="text-xs font-mono px-3 py-1.5 rounded-lg border border-line text-inkdim hover:text-cyan hover:border-cyan transition-colors">
+        📋 copy report (markdown)
+      </button>
+      <button onclick="downloadHtmlReport()"
+        class="text-xs font-mono px-3 py-1.5 rounded-lg border border-line text-inkdim hover:text-violet hover:border-violet transition-colors">
+        ⬇ download report (html)
+      </button>
+      <span id="reportStatus" class="text-[10px] font-mono text-inkdim"></span>
+    </div>
+  `;
+}
+
+async function fetchReport(format) {
+  if (!lastResult) throw new Error('no result to report on yet');
+  const res = await fetch(`${API_BASE}/v1/report`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ result: lastResult, format })
+  });
+  if (!res.ok) throw new Error(`Server returned ${res.status}`);
+  const data = await res.json();
+  return data.content;
+}
+
+function _flashReportStatus(text) {
+  const el = document.getElementById('reportStatus');
+  if (!el) return;
+  el.textContent = text;
+  setTimeout(() => { if (el.textContent === text) el.textContent = ''; }, 3000);
+}
+
+async function copyMarkdownReport() {
+  try {
+    const content = await fetchReport('markdown');
+    await navigator.clipboard.writeText(content);
+    _flashReportStatus('copied ✓');
+  } catch (err) {
+    _flashReportStatus(`couldn't copy: ${err.message}`);
+  }
+}
+
+async function downloadHtmlReport() {
+  try {
+    const content = await fetchReport('html');
+    const blob = new Blob([content], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'diagnostic-report.html';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    _flashReportStatus('downloaded ✓');
+  } catch (err) {
+    _flashReportStatus(`couldn't download: ${err.message}`);
+  }
 }
 
 // Confidence-gated escalation (see escalation.py): the plan above is

@@ -16,12 +16,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from schema import TroubleshootRequest, FeedbackRequest, BatchTroubleshootRequest
+from schema import TroubleshootRequest, FeedbackRequest, BatchTroubleshootRequest, ReportRequest
 
 from pipeline import run_pipeline, run_pipeline_streaming, llm_available
 from request_log import compute_stats
 from deeplink_matching import get_index, DUMMY_POSITIVE_DEEPLINK
 import feedback as feedback_module
+from report import generate_report, SUPPORTED_FORMATS
 from middleware import (
     RequestIDMiddleware, RateLimitMiddleware, error_body,
     troubleshoot_limiter, feedback_limiter, batch_limiter,
@@ -228,6 +229,28 @@ def submit_feedback(payload: FeedbackRequest, request: Request):
         session_id=payload.session_id or "",
     )
     return {"status": "recorded", "request_id": request.state.request_id, **result}
+
+
+@app.post("/v1/report")
+def report(payload: ReportRequest, request: Request):
+    """Task 38: packages an already-computed /v1/troubleshoot(/stream)
+    result into a compact, shareable report -- Markdown (default) or a
+    self-contained HTML page -- so a user can paste a fix into a support
+    ticket or forward it to someone without re-explaining the diagnosis.
+    See report.py for the rendering logic; this route never re-runs the
+    pipeline, so it's cheap and side-effect-free (no cache write, no
+    request-log entry)."""
+    if payload.format not in SUPPORTED_FORMATS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported format {payload.format!r} -- expected one of {SUPPORTED_FORMATS}",
+        )
+    content = generate_report(payload.result, fmt=payload.format)
+    return {
+        "request_id": request.state.request_id,
+        "format": payload.format,
+        "content": content,
+    }
 
 
 @app.get("/stats")

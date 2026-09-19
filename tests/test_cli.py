@@ -615,3 +615,153 @@ def test_print_result_shows_session_notes(capsys):
     })
     out = capsys.readouterr().out
     assert "1 action skipped from this session" in out
+
+
+# ---------------------------------------------------------------------------
+# `report` subcommand (Task 38)
+# ---------------------------------------------------------------------------
+
+def test_parser_routes_report_subcommand():
+    parser = cli.build_parser()
+    args = parser.parse_args(["report", "battery drains fast"])
+    assert args.func is cli.cmd_report
+    assert args.format == "markdown"
+
+
+def test_cmd_report_in_process_markdown_prints_to_stdout(capsys, real_samples):
+    sample = next(s for s in real_samples if s.get("siis_response"))
+    parser = cli.build_parser()
+    args = parser.parse_args(["report", sample["complaint"], "--siis-response", sample["siis_response"]])
+    cli.cmd_report(args)
+    out = capsys.readouterr().out
+    assert out.startswith("# Diagnostic Report")
+    assert sample["complaint"] in out
+
+
+def test_cmd_report_in_process_html_format(capsys, real_samples):
+    sample = next(s for s in real_samples if s.get("siis_response"))
+    parser = cli.build_parser()
+    args = parser.parse_args([
+        "report", sample["complaint"], "--siis-response", sample["siis_response"], "--format", "html",
+    ])
+    cli.cmd_report(args)
+    out = capsys.readouterr().out
+    assert out.startswith("<!DOCTYPE html>")
+
+
+def test_cmd_report_writes_to_output_file(capsys, real_samples, tmp_path):
+    sample = next(s for s in real_samples if s.get("siis_response"))
+    out_path = tmp_path / "report.md"
+    parser = cli.build_parser()
+    args = parser.parse_args([
+        "report", sample["complaint"], "--siis-response", sample["siis_response"],
+        "--output", str(out_path),
+    ])
+    cli.cmd_report(args)
+    assert out_path.exists()
+    content = out_path.read_text()
+    assert content.startswith("# Diagnostic Report")
+    printed = capsys.readouterr().out
+    assert str(out_path) in printed
+    assert "# Diagnostic Report" not in printed  # went to the file, not stdout
+
+
+def test_cmd_report_reads_siis_response_from_file(capsys, real_samples, tmp_path):
+    sample = next(s for s in real_samples if s.get("siis_response"))
+    siis_file = tmp_path / "siis.txt"
+    siis_file.write_text(sample["siis_response"])
+    parser = cli.build_parser()
+    args = parser.parse_args(["report", sample["complaint"], "--siis-file", str(siis_file)])
+    cli.cmd_report(args)
+    out = capsys.readouterr().out
+    assert "No matching troubleshooting plan" not in out
+
+
+def test_cmd_report_via_api_base_includes_device_and_session_id_in_payload(monkeypatch, capsys):
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        body = json.loads(req.data)
+        calls.append((req.full_url, body))
+        if req.full_url == "http://fake/v1/troubleshoot":
+            return _FakeResponse({"query": "anything", "response": {"contexts": []}, "meta": {}})
+        return _FakeResponse({"format": "markdown", "content": "# Diagnostic Report"})
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    parser = cli.build_parser()
+    args = parser.parse_args([
+        "--api-base", "http://fake", "report", "anything",
+        "--battery-pct", "5", "--session-id", "cli-report-api-session",
+    ])
+    cli.cmd_report(args)
+
+    troubleshoot_body = calls[0][1]
+    assert troubleshoot_body["device"] == {"battery_pct": 5.0}
+    assert troubleshoot_body["session_id"] == "cli-report-api-session"
+
+
+def test_cmd_report_forwards_session_id_and_device(monkeypatch):
+    import pipeline as pipeline_module
+    captured = {}
+
+    def fake_run_pipeline(query, siis_response="", device=None, session_id=None):
+        captured["session_id"] = session_id
+        captured["device"] = device
+        return {"query": query, "response": {"contexts": []}, "meta": {}}
+
+    monkeypatch.setattr(pipeline_module, "run_pipeline", fake_run_pipeline)
+    parser = cli.build_parser()
+    args = parser.parse_args([
+        "report", "anything", "--session-id", "cli-report-session", "--battery-pct", "5",
+    ])
+    cli.cmd_report(args)
+    assert captured["session_id"] == "cli-report-session"
+    assert captured["device"] == {"battery_pct": 5.0}
+
+
+def test_cmd_report_via_api_base_round_trips_troubleshoot_then_report(monkeypatch, capsys):
+    calls = []
+
+    def fake_urlopen(req, timeout=None):
+        body = json.loads(req.data)
+        calls.append((req.full_url, body))
+        if req.full_url == "http://fake/v1/troubleshoot":
+            return _FakeResponse({"query": "anything", "response": {"contexts": []}, "meta": {}})
+        elif req.full_url == "http://fake/v1/report":
+            assert body["format"] == "markdown"
+            assert body["result"] == {"query": "anything", "response": {"contexts": []}, "meta": {}}
+            return _FakeResponse({"format": "markdown", "content": "# Diagnostic Report\n\nhi"})
+        raise AssertionError(f"unexpected URL {req.full_url}")
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    parser = cli.build_parser()
+    args = parser.parse_args(["--api-base", "http://fake", "report", "anything"])
+    cli.cmd_report(args)
+
+    assert [url for url, _ in calls] == ["http://fake/v1/troubleshoot", "http://fake/v1/report"]
+    out = capsys.readouterr().out
+    assert "# Diagnostic Report" in out
+
+
+def test_cmd_report_via_api_base_troubleshoot_error_exits(monkeypatch):
+    def fake_urlopen(req, timeout=None):
+        return _FakeResponse({"error": {"message": "boom"}}, status=500)
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    parser = cli.build_parser()
+    args = parser.parse_args(["--api-base", "http://fake", "report", "anything"])
+    with pytest.raises(SystemExit):
+        cli.cmd_report(args)
+
+
+def test_cmd_report_via_api_base_report_error_exits(monkeypatch):
+    def fake_urlopen(req, timeout=None):
+        if req.full_url == "http://fake/v1/troubleshoot":
+            return _FakeResponse({"query": "anything", "response": {"contexts": []}, "meta": {}})
+        return _FakeResponse({"error": {"message": "bad format"}}, status=400)
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    parser = cli.build_parser()
+    args = parser.parse_args(["--api-base", "http://fake", "report", "anything"])
+    with pytest.raises(SystemExit):
+        cli.cmd_report(args)

@@ -4,7 +4,8 @@ from pydantic import ValidationError
 
 from schema import (
     Action, ActionCategory, BatchTroubleshootRequest, DeviceContext, EscalationAction,
-    EscalationRecommendation, FeedbackRequest, Goal, Meta, StepGroup, TroubleshootRequest,
+    EscalationRecommendation, FeedbackRequest, Goal, Meta, ReportRequest, StepGroup,
+    TroubleshootRequest,
 )
 
 
@@ -149,3 +150,15 @@ def test_feedback_request_session_id_is_optional():
 def test_meta_session_notes_defaults_to_empty_list():
     meta = Meta(latency_ms=1.0, cache_hit=False, model="x", cost_usd=0.0)
     assert meta.session_notes == []
+
+
+def test_report_request_requires_result_and_defaults_format():
+    with pytest.raises(ValidationError):
+        ReportRequest()
+    req = ReportRequest(result={"query": "x", "response": {"contexts": []}, "meta": {}})
+    assert req.format == "markdown"
+
+
+def test_report_request_accepts_explicit_format():
+    req = ReportRequest(result={"query": "x"}, format="html")
+    assert req.format == "html"

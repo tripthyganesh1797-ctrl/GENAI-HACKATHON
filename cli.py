@@ -30,6 +30,9 @@ Examples:
     python cli.py --api-base http://localhost:8000 batch queries.json
 
     python cli.py --api-base http://localhost:8000 health
+
+    # Package a result as a shareable report (Task 38)
+    python cli.py report "camera app keeps crashing" --format html -o report.html
 """
 from __future__ import annotations
 
@@ -337,6 +340,51 @@ def cmd_feedback(args):
     print(json.dumps(data, indent=2))
 
 
+def cmd_report(args):
+    """Task 38: run a complaint through the pipeline, then package the
+    result into a compact, shareable report (Markdown by default, or
+    --format html). Prints to stdout, or writes to --output if given.
+
+    In-process mode formats locally (report.py has no network/LLM
+    dependency of its own). --api-base mode round-trips through the real
+    API: POST /v1/troubleshoot to get a result, then POST /v1/report to
+    format it -- exercising the same two-step flow the demo UI uses."""
+    siis_response = args.siis_response or ""
+    if args.siis_file:
+        with open(args.siis_file) as f:
+            siis_response = f.read()
+    device = _device_dict_from_args(args)
+
+    if args.api_base:
+        payload = {"query": args.query, "siis_response": siis_response}
+        if device:
+            payload["device"] = device
+        if args.session_id:
+            payload["session_id"] = args.session_id
+        status, result = _http_post_json(f"{args.api_base}/v1/troubleshoot", payload)
+        if status != 200:
+            print(red(f"API error {status}: {json.dumps(result)}"))
+            sys.exit(1)
+        status, data = _http_post_json(f"{args.api_base}/v1/report",
+                                        {"result": result, "format": args.format})
+        if status != 200:
+            print(red(f"API error {status}: {json.dumps(data)}"))
+            sys.exit(1)
+        content = data["content"]
+    else:
+        from pipeline import run_pipeline
+        from report import generate_report
+        result = run_pipeline(args.query, siis_response, device=device, session_id=args.session_id)
+        content = generate_report(result, fmt=args.format)
+
+    if args.output:
+        with open(args.output, "w") as f:
+            f.write(content)
+        print(dim(f"wrote {args.output}"))
+    else:
+        print(content)
+
+
 def cmd_health(args):
     base = args.api_base or "http://localhost:8000"
     status, data = _http_get_json(f"{base}/health")
@@ -420,6 +468,17 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Task 36: with --unhelpful, this session's later query/stream calls "
                           "will steer away from this exact deeplink")
     fb.set_defaults(func=cmd_feedback)
+
+    rp = sub.add_parser("report", help="Run a complaint and package the result as a shareable Markdown/HTML report")
+    rp.add_argument("query", help="The raw complaint text")
+    rp.add_argument("--siis-response", default=None, help="Reference troubleshooting text to ground the plan in")
+    rp.add_argument("--siis-file", default=None, help="Read --siis-response from a file instead")
+    rp.add_argument("--format", choices=["markdown", "html"], default="markdown",
+                     help="Report format (default: markdown)")
+    rp.add_argument("--output", "-o", default=None, help="Write the report to this file instead of stdout")
+    rp.add_argument("--session-id", default=None)
+    _add_device_args(rp)
+    rp.set_defaults(func=cmd_report)
 
     h = sub.add_parser("health", help="Check API server health (requires --api-base)")
     h.set_defaults(func=cmd_health)
