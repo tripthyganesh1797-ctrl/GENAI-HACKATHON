@@ -503,9 +503,12 @@ class TestReportEndpoint:
         body = res.json()
         assert "request_id" in body["error"]
 
-    def test_no_match_result_still_produces_a_report(self, client, real_samples):
-        sample = real_samples[0]
-        first = client.post("/v1/troubleshoot", json={"query": sample["complaint"]})  # no siis_response
+    def test_no_match_result_still_produces_a_report(self, client):
+        """A genuinely out-of-scope complaint -- not just "no siis_response
+        supplied" -- is what actually yields no_match on the offline path
+        now that builtin_knowledge.py grounds a bare in-scope complaint in
+        generic reference text instead of an automatic no_match."""
+        first = client.post("/v1/troubleshoot", json={"query": "how do I cook pasta at home"})
         assert first.json()["response"]["contexts"] == []
         res = client.post("/v1/report", json={"result": first.json()})
         assert res.status_code == 200

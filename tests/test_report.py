@@ -209,9 +209,12 @@ class TestEndToEndWithRealPipeline:
         html = report.generate_report(result, fmt="html")
         assert "<!DOCTYPE html>" in html
 
-    def test_real_no_match_result_produces_a_report(self, real_samples):
+    def test_real_no_match_result_produces_a_report(self):
+        """A genuinely out-of-scope complaint (not just "no siis_response
+        supplied" -- see builtin_knowledge.py, which now grounds a bare
+        in-scope complaint in generic reference text instead) is what
+        actually produces a no_match result on the offline path."""
         import pipeline
-        sample = real_samples[0]
-        result = pipeline.run_pipeline(sample["complaint"], "")  # no siis_response -> no_match
+        result = pipeline.run_pipeline("how do I cook pasta at home", "")
         md = report.generate_report(result)
         assert "No matching troubleshooting plan" in md

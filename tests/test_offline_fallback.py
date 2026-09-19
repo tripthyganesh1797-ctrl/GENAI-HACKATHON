@@ -198,12 +198,27 @@ class TestOfflineExtractEndToEnd:
                 errors = validators.validate_goal_object(dict(goal))
                 assert errors == [], f"{sample['complaint'][:50]}: {errors}"
 
-    def test_empty_siis_response_always_yields_no_match(self, real_samples):
-        """No-hallucination guarantee: with no reference text, the offline
-        path must never invent a fix."""
-        sample = real_samples[0]
+    def test_empty_siis_response_falls_back_to_builtin_knowledge(self, real_samples):
+        """As of builtin_knowledge.py: a blank siis_response no longer means
+        an automatic no_match -- it substitutes a small hand-written generic
+        troubleshooting reference so a bare complaint with no reference text
+        can still get a real, relevance-gated answer (see that module's
+        docstring). The no-hallucination guarantee still holds -- nothing
+        here invents a step that isn't in SOME source text, official or
+        built-in -- it's just that the source text is now flagged via
+        meta.used_builtin_reference instead of always being absent."""
+        sample = real_samples[0]  # a real screen-blank complaint
         result = of.offline_extract(sample["complaint"], "")
+        assert result["contexts"] != []
+        assert result["used_builtin_reference"] is True
+
+    def test_empty_siis_response_still_rejects_genuinely_out_of_scope_queries(self):
+        """The relevance gate is completely unchanged by the built-in
+        fallback -- a query about something this catalog has nothing to do
+        with must still come back no_match, not a forced/irrelevant match."""
+        result = of.offline_extract("how do I cook pasta at home", "")
         assert result["contexts"] == []
+        assert result["used_builtin_reference"] is True
 
     def test_actions_are_one_screen_each_and_ordered_critical_last(self, real_samples):
         for sample in real_samples:

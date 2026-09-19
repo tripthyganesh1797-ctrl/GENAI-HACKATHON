@@ -17,6 +17,16 @@ in the source text).
 Nothing in this file calls an LLM. Deeplink matching is NOT duplicated
 here — it reuses deeplink_matching.py, the exact same module the LLM path
 uses for Stage 2.
+
+When a caller supplies no siis_response at all (a real person just typing
+their own complaint, with no reference text to ground a plan in),
+offline_extract() falls back to builtin_knowledge.py's small hand-written
+generic troubleshooting text instead of returning an immediate no_match —
+see that module's docstring for the full rationale. Everything downstream
+of that substitution (relevance gating, multi-issue splitting, deeplink
+matching) is completely unchanged; an out-of-scope complaint still
+correctly clears no section's relevance bar and still comes back
+no_match, exactly as before.
 """
 from __future__ import annotations
 
@@ -25,6 +35,7 @@ import string
 from dataclasses import dataclass, field
 
 from escalation import build_escalation_recommendation
+from builtin_knowledge import get_builtin_reference_text
 
 # ---------------------------------------------------------------------
 # Query enrichment (offline replacement for Stage 0 / prompts.STAGE0_*)
@@ -48,6 +59,17 @@ _STOPWORDS = {
     "or", "to", "of", "in", "on", "for", "with", "so", "this", "that",
     "after", "when", "while", "not", "but", "have", "has", "had", "be",
     "been", "being", "just", "even", "also", "no", "any", "other",
+    # Generic question/filler words. These carry no diagnostic content on
+    # their own -- "what is the capital of France" and "some complaint
+    # with nothing to ground it" are meaningless as troubleshooting
+    # queries, but without filtering "what"/"some" here, a single
+    # incidental appearance of either word anywhere in a large reference
+    # document (they're common English words) can push relevance just
+    # over NO_MATCH_SECTION_THRESHOLD and produce a false-positive match.
+    # Dropping them from the significant-token set removes that risk
+    # entirely, for both the offline built-in corpus and any real
+    # caller-supplied siis_response.
+    "what", "how", "why", "which", "who", "some",
 }
 
 
@@ -186,9 +208,19 @@ def core_problem_phrase(raw_query: str) -> str:
     return re.sub(r"\s+", " ", q).strip(" ,") or normalize_query(raw_query)
 
 
-def significant_tokens(text: str) -> set[str]:
+def significant_tokens(text: str, stem: bool = False) -> set[str]:
+    """`stem` (only ever passed True from the strict/built-in-reference
+    path in _build_single_goal -- see its docstring) crudely normalizes
+    word endings via _stem() so e.g. "crashing"/"crash" or
+    "working"/"work" count as the same token. Off by default so real
+    caller-supplied siis_response matching is completely unaffected --
+    NO_MATCH_SECTION_THRESHOLD and the escalation ceiling were calibrated
+    against exact-token matching on that data."""
     text = text.translate(str.maketrans("", "", string.punctuation))
-    return {t.lower() for t in text.split() if len(t) > 2} - _STOPWORDS
+    tokens = {t.lower() for t in text.split() if len(t) > 2} - _STOPWORDS
+    if stem:
+        tokens = {_stem(t) for t in tokens}
+    return tokens
 
 
 def _inject_typo(text: str) -> str:
@@ -355,9 +387,9 @@ def classify_category(header: str, body: str) -> str:
     return "auto"
 
 
-def section_relevance(query_core: str, section: Section) -> float:
-    q_tokens = significant_tokens(query_core)
-    s_tokens = significant_tokens(section.header + " " + section.body)
+def section_relevance(query_core: str, section: Section, stem: bool = False) -> float:
+    q_tokens = significant_tokens(query_core, stem=stem)
+    s_tokens = significant_tokens(section.header + " " + section.body, stem=stem)
     if not q_tokens or not s_tokens:
         return 0.0
     return len(q_tokens & s_tokens) / len(q_tokens)
@@ -486,23 +518,83 @@ def _looks_like_ui_action(step: str) -> bool:
                                    "swipe", "screen", "menu"))
 
 
-def _build_single_goal(core: str, siis_response: str, avoid_deeplinks=None) -> dict | None:
+def _min_overlap_count(q_tokens: set) -> int:
+    """Below this many shared significant tokens, a section's relevance
+    ratio is not trustworthy -- see the `strict` parameter of
+    _build_single_goal() for why this only matters for the broad,
+    multi-topic built-in corpus. A 1-token query ("wifi") can only ever
+    overlap on 1 token, so the floor stays at 1 there; anything longer
+    needs at least 2 shared words before it counts as real evidence."""
+    return 1 if len(q_tokens) <= 1 else 2
+
+
+def _build_single_goal(core: str, siis_response: str, avoid_deeplinks=None,
+                        strict: bool = False) -> dict | None:
     """Core single-issue extraction: given ONE problem phrase and the
     reference text, returns one Goal dict or None (no viable match).
-    `avoid_deeplinks` (Task 36) passes through to _group_steps()."""
+    `avoid_deeplinks` (Task 36) passes through to _group_steps().
+
+    `strict` (set only when the reference text is builtin_knowledge.py's
+    generic fallback, never for a real caller-supplied siis_response):
+    a real siis_response is a narrow, single-topic document written FOR
+    that one query, so a single shared word between the query and that
+    document is already meaningful signal, and its multiple headers are
+    typically sub-aspects of the SAME complaint -- the existing ratio-only
+    "combine every section within 50% of the best" behaviour, matched
+    against the whole document as one more candidate, was calibrated
+    against exactly that shape of data and is left completely untouched
+    here. The built-in corpus is different: it's one broad document
+    covering ~17 unrelated topics, so near-tied sections are essentially
+    always different, unrelated topics, not sub-aspects of one complaint --
+    combining them (or, worse, silently falling back to ALL 17 sections
+    when the per-section band comes up empty) produces a garbled,
+    mixed-topic plan. Strict mode instead: (a) stems tokens so ordinary
+    word-ending variation ("crashing"/"crash", "working"/"work") still
+    counts as a match, (b) requires a minimum ABSOLUTE overlap count (see
+    _min_overlap_count), not just a ratio, so a single coincidental shared
+    word can't establish relevance on its own, (c) never uses the
+    whole-document union as a relevance signal -- it lets unrelated
+    sections' single-token hits combine into a spurious "the document as a
+    whole matches" result even when no individual section does, and
+    (d) sources steps from ONLY the single best-matching section (ties
+    broken by raw overlap count), never a same-score band or an
+    all-sections fallback -- if nothing individually clears the bar, this
+    honestly returns no_match rather than guessing across every topic.
+    """
     sections = parse_sections(siis_response)
-    scored = [(sec, section_relevance(core, sec)) for sec in sections]
-    best_section_relevance = max((s for _, s in scored), default=0.0)
-    whole_doc_relevance = section_relevance(core, Section(header="", body=siis_response))
-    best_relevance = max(best_section_relevance, whole_doc_relevance)
+    q_tokens = significant_tokens(core, stem=strict)
+    min_overlap = _min_overlap_count(q_tokens)
 
-    if best_relevance < NO_MATCH_SECTION_THRESHOLD:
-        return None
+    def _scored_relevance(sec: Section) -> tuple[float, int]:
+        s_tokens = significant_tokens(sec.header + " " + sec.body, stem=strict)
+        overlap = q_tokens & s_tokens
+        ratio = section_relevance(core, sec, stem=strict)
+        if strict and ratio > 0 and len(overlap) < min_overlap:
+            return 0.0, len(overlap)
+        return ratio, len(overlap)
 
-    relevant_sections = [sec for sec, score in scored
-                          if score >= max(NO_MATCH_SECTION_THRESHOLD, best_section_relevance * 0.5)]
-    if not relevant_sections:
-        relevant_sections = sections
+    scored = [(sec, *_scored_relevance(sec)) for sec in sections]
+    best_section_relevance = max((s for _, s, _ in scored), default=0.0)
+
+    if strict:
+        # No whole-document union, no all-sections fallback -- see the
+        # docstring above for why both are unsafe against a broad,
+        # multi-topic corpus.
+        best_relevance = best_section_relevance
+        if best_relevance < NO_MATCH_SECTION_THRESHOLD:
+            return None
+        best_overlap = max((o for _, s, o in scored if s == best_relevance), default=0)
+        relevant_sections = [sec for sec, s, o in scored
+                              if s == best_relevance and o == best_overlap][:1]
+    else:
+        whole_doc_relevance = section_relevance(core, Section(header="", body=siis_response))
+        best_relevance = max(best_section_relevance, whole_doc_relevance)
+        if best_relevance < NO_MATCH_SECTION_THRESHOLD:
+            return None
+        relevant_sections = [sec for sec, score, _ in scored
+                              if score >= max(NO_MATCH_SECTION_THRESHOLD, best_section_relevance * 0.5)]
+        if not relevant_sections:
+            relevant_sections = sections
 
     steps_with_ctx: list[tuple[str, str]] = []
     seen_steps: set[str] = set()
@@ -560,20 +652,32 @@ def offline_extract(technical_query: str, siis_response: str, core_problem: str 
 
     `avoid_deeplinks` (Task 36, session_memory.py) passes through to every
     _build_single_goal() call below.
+
+    When `siis_response` is blank, substitutes builtin_knowledge.py's
+    generic troubleshooting text so a bare complaint ("my battery is
+    draining fast", no reference text supplied) still gets a real,
+    relevance-gated answer on the zero-API-key path instead of an
+    immediate no_match -- see that module's docstring for the rationale.
+    A genuinely out-of-scope complaint still correctly fails every
+    section's relevance bar and still comes back no_match unchanged.
     """
+    used_builtin_reference = False
     if not siis_response or not siis_response.strip():
-        return {"contexts": []}
+        siis_response = get_builtin_reference_text()
+        used_builtin_reference = True
 
     sub_queries = split_multi_issue(core_problem or technical_query)
     if len(sub_queries) == 1:
         core = core_problem or core_problem_phrase(technical_query)
-        goal = _build_single_goal(core, siis_response, avoid_deeplinks=avoid_deeplinks)
-        return {"contexts": [goal] if goal else []}
+        goal = _build_single_goal(core, siis_response, avoid_deeplinks=avoid_deeplinks,
+                                   strict=used_builtin_reference)
+        return {"contexts": [goal] if goal else [], "used_builtin_reference": used_builtin_reference}
 
     contexts = []
     for sub_q in sub_queries:
         sub_core = core_problem_phrase(sub_q)
-        goal = _build_single_goal(sub_core, siis_response, avoid_deeplinks=avoid_deeplinks)
+        goal = _build_single_goal(sub_core, siis_response, avoid_deeplinks=avoid_deeplinks,
+                                   strict=used_builtin_reference)
         if goal is not None:
             contexts.append(goal)
 
@@ -581,11 +685,12 @@ def offline_extract(technical_query: str, siis_response: str, core_problem: str 
         # None of the sub-issues found grounding -- try once more treating
         # the complaint as a single issue before giving up entirely.
         core = core_problem or core_problem_phrase(technical_query)
-        goal = _build_single_goal(core, siis_response, avoid_deeplinks=avoid_deeplinks)
-        return {"contexts": [goal] if goal else []}
+        goal = _build_single_goal(core, siis_response, avoid_deeplinks=avoid_deeplinks,
+                                   strict=used_builtin_reference)
+        return {"contexts": [goal] if goal else [], "used_builtin_reference": used_builtin_reference}
 
     contexts.sort(key=lambda g: g["score"], reverse=True)
-    return {"contexts": contexts}
+    return {"contexts": contexts, "used_builtin_reference": used_builtin_reference}
 
 
 # --- Multi-issue splitting -------------------------------------------

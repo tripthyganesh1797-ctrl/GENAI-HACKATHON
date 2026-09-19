@@ -13,11 +13,27 @@ def test_run_pipeline_on_real_query_is_schema_valid(real_samples):
         assert validators.validate_goal_object(dict(goal)) == []
 
 
-def test_run_pipeline_no_siis_response_yields_no_match(real_samples):
-    sample = real_samples[0]
+def test_run_pipeline_no_siis_response_grounds_in_builtin_knowledge(real_samples):
+    """As of builtin_knowledge.py: a bare complaint with no reference text
+    no longer automatically comes back no_match on the offline path -- see
+    offline_fallback.py's offline_extract() and that module's docstring.
+    A real person typing their own problem with zero setup (no LLM key,
+    no reference text to paste in) now gets a real, relevance-gated plan."""
+    sample = real_samples[0]  # a real screen-blank complaint
     result = pipeline.run_pipeline(sample["complaint"], "")
+    assert result["response"]["contexts"] != []
+    assert result["meta"]["fallback"] is None
+    assert result["meta"]["used_builtin_reference"] is True
+
+
+def test_run_pipeline_no_siis_response_still_no_match_for_out_of_scope_query():
+    """The relevance gate is unchanged -- a genuinely out-of-scope
+    complaint must still come back no_match even with the built-in
+    fallback text substituted in."""
+    result = pipeline.run_pipeline("how do I cook pasta at home", "")
     assert result["response"]["contexts"] == []
     assert result["meta"]["fallback"] == "no_match"
+    assert result["meta"]["used_builtin_reference"] is True
 
 
 def test_run_pipeline_reports_offline_fallback_used():
@@ -30,12 +46,24 @@ def test_run_pipeline_reports_offline_fallback_used():
 
 
 def test_cache_hit_on_second_identical_call():
-    complaint = "my wifi keeps disconnecting randomly"
+    complaint = "how do I cook pasta at home"  # genuinely out of scope -> no_match
     first = pipeline.run_pipeline(complaint, "")
     assert first["meta"]["cache_hit"] is False
     second = pipeline.run_pipeline(complaint, "")
     # no_match responses are never cached (see run_pipeline: `if contexts: set_cached(...)`)
     assert second["meta"]["cache_hit"] is False
+
+
+def test_cache_hit_on_second_identical_call_with_a_real_match():
+    """Companion to the no_match case above -- a query that DOES produce
+    contexts (grounded in builtin_knowledge.py, since no siis_response is
+    given here) must still be cached and hit on the second call."""
+    complaint = "my wifi keeps disconnecting randomly"
+    first = pipeline.run_pipeline(complaint, "")
+    assert first["response"]["contexts"] != []
+    assert first["meta"]["cache_hit"] is False
+    second = pipeline.run_pipeline(complaint, "")
+    assert second["meta"]["cache_hit"] is True
 
 
 class TestEscalation:
