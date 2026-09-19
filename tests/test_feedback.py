@@ -2,6 +2,7 @@
 formula. These are the load-bearing guarantees for the feedback loop:
 a single click can never flip a ranking, but a consistent pattern can."""
 import feedback
+import session_memory
 
 
 def test_no_feedback_means_zero_adjustment():
@@ -63,3 +64,38 @@ def test_feedback_summary_counts_events():
 def test_empty_deeplink_key_is_safe():
     assert feedback.get_adjustment("") == 0.0
     assert feedback.get_adjustment(None) == 0.0
+
+
+class TestSessionMemoryHook:
+    """Task 36: record_feedback() is also the write path into
+    session_memory.py's per-session avoid list -- a DIFFERENT, session-
+    scoped mechanism from the global adjustment tested above. See
+    session_memory.py's module docstring for why they're kept separate."""
+
+    def test_unhelpful_feedback_with_session_id_records_in_session_memory(self):
+        feedback.record_feedback("bixby://masked/act/sess1", "X", helpful=False,
+                                  session_id="my-session")
+        assert "bixby://masked/act/sess1" in session_memory.get_avoid_set("my-session")
+
+    def test_helpful_feedback_with_session_id_does_not_get_avoided(self):
+        feedback.record_feedback("bixby://masked/act/sess2", "X", helpful=True,
+                                  session_id="my-session-2")
+        assert session_memory.get_avoid_set("my-session-2") == set()
+
+    def test_unhelpful_feedback_without_session_id_touches_no_session(self):
+        feedback.record_feedback("bixby://masked/act/sess3", "X", helpful=False)
+        # No session_id was given, so nothing should be recorded anywhere --
+        # this is really just confirming record_feedback() never crashes
+        # or invents a session when session_id="" (the default).
+        assert session_memory.get_avoid_set("") == set()
+        assert session_memory.get_avoid_set(None) == set()
+
+    def test_session_avoidance_does_not_affect_the_global_feedback_score(self):
+        """The two mechanisms are independent: a single session's negative
+        feedback still only nudges the GLOBAL score by the normal single-
+        vote amount, same as if no session_id had been supplied."""
+        feedback.record_feedback("bixby://masked/act/sess4", "X", helpful=False,
+                                  session_id="my-session-4")
+        adj = feedback.get_adjustment("bixby://masked/act/sess4")
+        assert -feedback.MAX_ADJUSTMENT < adj < 0
+        assert abs(adj) < feedback.MAX_ADJUSTMENT * 0.5  # still a bounded single-vote nudge

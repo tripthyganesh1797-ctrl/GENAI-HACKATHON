@@ -138,6 +138,8 @@ def print_result(data: dict, verbose: bool = False):
 
     for note in meta.get("device_context_notes", []):
         print(yellow(f"  ⚠ {note}"))
+    for note in meta.get("session_notes", []):
+        print(cyan(f"  ↻ {note}"))
 
     if not contexts:
         print(yellow("\n  no match in the diagnostic catalog\n"))
@@ -200,13 +202,15 @@ def cmd_query(args):
         payload = {"query": args.query, "siis_response": siis_response}
         if device:
             payload["device"] = device
+        if args.session_id:
+            payload["session_id"] = args.session_id
         status, data = _http_post_json(f"{args.api_base}/v1/troubleshoot", payload)
         if status != 200:
             print(red(f"API error {status}: {json.dumps(data)}"))
             sys.exit(1)
     else:
         from pipeline import run_pipeline
-        data = run_pipeline(args.query, siis_response, device=device)
+        data = run_pipeline(args.query, siis_response, device=device, session_id=args.session_id)
 
     if args.json:
         print(json.dumps(data, indent=2))
@@ -225,7 +229,8 @@ def cmd_stream(args):
     print(bold(f"streaming: {args.query}\n"))
     t0 = time.time()
     device = _device_dict_from_args(args)
-    for event in run_pipeline_streaming(args.query, args.siis_response or "", device=device):
+    for event in run_pipeline_streaming(args.query, args.siis_response or "", device=device,
+                                         session_id=args.session_id):
         stage, status = event.get("stage"), event.get("status")
         elapsed_ms = (time.time() - t0) * 1000
         prefix = dim(f"[{elapsed_ms:7.1f}ms]")
@@ -303,6 +308,35 @@ def cmd_batch(args):
         print(dim(f"\nwrote {args.out}"))
 
 
+def cmd_feedback(args):
+    """Task 36 demo path: thumbs up/down on a deeplink from an earlier
+    `query`/`stream` run. Pass the same --session-id used for that run
+    (and helpful=false) to see the NEXT query in that session steer away
+    from the deeplink -- try:
+        python cli.py query "wifi keeps disconnecting" --session-id demo-1 -v
+        python cli.py feedback bixby://masked/act/... "Wifi Settings" --unhelpful --session-id demo-1
+        python cli.py query "wifi keeps disconnecting" --session-id demo-1 -v
+    """
+    if args.api_base:
+        payload = {
+            "deeplink": args.deeplink, "action_name": args.action_name,
+            "helpful": not args.unhelpful,
+        }
+        if args.session_id:
+            payload["session_id"] = args.session_id
+        status, data = _http_post_json(f"{args.api_base}/v1/feedback", payload)
+        if status != 200:
+            print(red(f"API error {status}: {json.dumps(data)}"))
+            sys.exit(1)
+    else:
+        import feedback as feedback_module
+        data = feedback_module.record_feedback(
+            deeplink=args.deeplink, action_name=args.action_name,
+            helpful=not args.unhelpful, session_id=args.session_id or "",
+        )
+    print(json.dumps(data, indent=2))
+
+
 def cmd_health(args):
     base = args.api_base or "http://localhost:8000"
     status, data = _http_get_json(f"{base}/health")
@@ -358,6 +392,9 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--siis-file", default=None, help="Read --siis-response from a file instead")
     q.add_argument("--json", action="store_true", help="Print the raw JSON response instead of formatted text")
     q.add_argument("--verbose", "-v", action="store_true", help="Also show each match's score breakdown (see deeplink_matching.py)")
+    q.add_argument("--session-id", default=None,
+                   help="Task 36: reuse the same value across calls to avoid re-suggesting an "
+                        "action this session already marked unhelpful via `feedback --unhelpful`")
     _add_device_args(q)
     q.set_defaults(func=cmd_query)
 
@@ -365,6 +402,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("query", help="The raw complaint text")
     s.add_argument("--siis-response", default=None)
     s.add_argument("--verbose", "-v", action="store_true")
+    s.add_argument("--session-id", default=None)
     _add_device_args(s)
     s.set_defaults(func=cmd_stream)
 
@@ -372,6 +410,16 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("file", help="Path to a JSON file of complaints")
     b.add_argument("--out", default=None, help="Write full per-item results to this JSON file")
     b.set_defaults(func=cmd_batch)
+
+    fb = sub.add_parser("feedback", help="Thumbs up/down a deeplink from an earlier query/stream run")
+    fb.add_argument("deeplink", help="The actionableDeeplink.deeplink string returned earlier")
+    fb.add_argument("action_name", help="The actionName it was attached to")
+    fb.add_argument("--unhelpful", action="store_true",
+                     help="Mark as unhelpful (default is helpful=true)")
+    fb.add_argument("--session-id", default=None,
+                     help="Task 36: with --unhelpful, this session's later query/stream calls "
+                          "will steer away from this exact deeplink")
+    fb.set_defaults(func=cmd_feedback)
 
     h = sub.add_parser("health", help="Check API server health (requires --api-base)")
     h.set_defaults(func=cmd_health)

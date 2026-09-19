@@ -29,6 +29,7 @@ from request_log import append_log
 from deeplink_matching import match_and_build_deeplink
 from escalation import build_escalation_recommendation, LLM_SCORE_ESCALATION_THRESHOLD
 from device_signals import apply_device_context
+from session_memory import get_avoid_set
 import offline_fallback
 
 _PLACEHOLDER_KEYS = {None, "", "your_key_here"}
@@ -103,14 +104,21 @@ def _format_device_context_block(device: Optional[dict]) -> str:
 
 
 def stage1_extract(technical_query: str, siis_response: str = "",
-                    force_offline: bool = False, device: Optional[dict] = None) -> tuple[dict, bool]:
+                    force_offline: bool = False, device: Optional[dict] = None,
+                    avoid_deeplinks=None) -> tuple[dict, bool]:
     """Returns (result, used_fallback). `device` (Task 35) is only used to
-    enrich the LLM prompt here -- the offline path ignores it entirely
-    (offline_extract's signature is unchanged), and either way the actual
-    device-aware reordering/notes happen once, uniformly, in
-    run_pipeline()/run_pipeline_streaming() via apply_device_context() --
-    see device_signals.py for why that's done centrally instead of inside
-    each path separately."""
+    enrich the LLM prompt here -- the offline path ignores it entirely,
+    and either way the actual device-aware reordering/notes happen once,
+    uniformly, in run_pipeline()/run_pipeline_streaming() via
+    apply_device_context() -- see device_signals.py for why that's done
+    centrally instead of inside each path separately.
+
+    `avoid_deeplinks` (Task 36, session_memory.py) is the opposite: the
+    LLM path never picks a real deeplink itself (Stage 2 always resolves
+    that in code, see enrich_with_deeplinks()), so there's nothing to pass
+    into the LLM prompt for it -- it only matters on the offline path,
+    where offline_extract() resolves deeplinks directly while building
+    each Goal's actions."""
     if not force_offline and llm_available():
         topic = _guess_topic(technical_query)
         try:
@@ -125,7 +133,8 @@ def stage1_extract(technical_query: str, siis_response: str = "",
                 return result, False
         except Exception:
             pass  # fall through to offline path
-    return offline_fallback.offline_extract(technical_query, siis_response), True
+    return offline_fallback.offline_extract(technical_query, siis_response,
+                                             avoid_deeplinks=avoid_deeplinks), True
 
 
 # ---------------------------------------------------------------------------
@@ -151,11 +160,12 @@ def _maybe_attach_llm_escalation(goal: dict) -> None:
         )
 
 
-def enrich_with_deeplinks(goal_dict: dict, variant: str = "hybrid") -> dict:
+def enrich_with_deeplinks(goal_dict: dict, variant: str = "hybrid", avoid_deeplinks=None) -> dict:
     """Stage 2. The offline fallback path already attaches deeplinks
     per-step while it groups steps (it needs the match result to decide
     grouping in the first place) -- so this only fills in actions that
-    don't have one yet, which is exactly the LLM path's output shape."""
+    don't have one yet, which is exactly the LLM path's output shape.
+    `avoid_deeplinks` (Task 36) passes straight through to the matcher."""
     for action in goal_dict.get("actions", []):
         if action.get("category") == "critical":
             continue  # critical actions cannot carry an actionable deeplink
@@ -164,6 +174,7 @@ def enrich_with_deeplinks(goal_dict: dict, variant: str = "hybrid") -> dict:
                 continue  # already resolved (offline path)
             actionable, validation = match_and_build_deeplink(
                 action["actionName"], step_group["steps"], variant=variant,
+                avoid_deeplinks=avoid_deeplinks,
             )
             step_group["actionableDeeplink"] = actionable
             if validation is not None:
@@ -172,14 +183,59 @@ def enrich_with_deeplinks(goal_dict: dict, variant: str = "hybrid") -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Task 36 — session-scoped "already tried this" summary. Scans the final
+# contexts for the per-action flags deeplink_matching.py's
+# best_match_explained() may have set (session_avoid_skipped /
+# already_tried_this_session) and turns them into a couple of plain-
+# language sentences for meta.session_notes, mirroring
+# device_signals.py's meta.device_context_notes in shape and purpose.
+# ---------------------------------------------------------------------------
+
+def _summarize_session_avoidance(contexts: list) -> list[str]:
+    skipped_count = 0
+    repeated_action_names: set[str] = set()
+    for goal in contexts:
+        for action in goal.get("actions", []):
+            for sg in action.get("stepGroups", []):
+                dl = sg.get("actionableDeeplink") or {}
+                exp = dl.get("matchExplanation") or {}
+                if exp.get("session_avoid_skipped"):
+                    skipped_count += 1
+                if exp.get("already_tried_this_session"):
+                    repeated_action_names.add(action.get("actionName") or "this action")
+
+    notes = []
+    if skipped_count:
+        plural = "es" if skipped_count != 1 else ""
+        notes.append(
+            f"Skipped {skipped_count} previously-tried match{plural} from this session "
+            f"that you already marked unhelpful, in favor of a different suggestion."
+        )
+    if repeated_action_names:
+        names = ", ".join(sorted(repeated_action_names))
+        notes.append(
+            f"{names} is suggested again because it's still the best available match for "
+            f"this complaint -- you told us it didn't help last time, so this may be worth "
+            f"escalating instead of repeating."
+        )
+    return notes
+
+
+# ---------------------------------------------------------------------------
 # Full pipeline
 # ---------------------------------------------------------------------------
 
-def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[dict] = None) -> dict:
+def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[dict] = None,
+                  session_id: Optional[str] = None) -> dict:
     start = time.time()
     total_prompt_tokens = 0
     total_completion_tokens = 0
     used_fallback_any = False
+
+    # Task 36: which deeplinks (if any) THIS session already tried and
+    # marked unhelpful. Empty for no session_id / a session with no
+    # negative feedback yet -- the common case, and a complete no-op.
+    avoid_deeplinks = get_avoid_set(session_id)
 
     # Stage 0
     enrichment, fb0 = stage0_enrich(raw_complaint)
@@ -193,13 +249,22 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
     # data baked in, since the cache key is technical_query alone) -- so
     # device context is applied fresh on EVERY request, cache hit or not,
     # never persisted into the cached entry. See device_signals.py.
-    cached = get_cached(technical_query)
+    #
+    # Task 36: a cached entry's Stage 2 deeplink choices were already
+    # baked in by WHOEVER first populated that cache slot -- possibly a
+    # different session, possibly no session at all. Serving it to a
+    # session with active avoidance data would silently reintroduce
+    # exactly the deeplink this feature exists to steer away from, so the
+    # cache is bypassed entirely (read AND write) whenever avoid_deeplinks
+    # is non-empty. See session_memory.py's module docstring.
+    cached = get_cached(technical_query) if not avoid_deeplinks else None
     if cached:
         cached["meta"]["cache_hit"] = True
         cached["meta"]["latency_ms"] = round((time.time() - start) * 1000, 1)
         cached["meta"]["device_context_notes"] = apply_device_context(
             cached["response"]["contexts"], device
         )
+        cached["meta"]["session_notes"] = []  # avoid_deeplinks is empty on every cache hit
         append_log({
             "domain_guess": _guess_topic(technical_query),
             "cache_hit": True,
@@ -212,7 +277,8 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
         return cached
 
     # Stage 1
-    extraction, fb1 = stage1_extract(technical_query, siis_response, device=device)
+    extraction, fb1 = stage1_extract(technical_query, siis_response, device=device,
+                                      avoid_deeplinks=avoid_deeplinks)
     used_fallback_any = used_fallback_any or fb1
     if not fb1:
         total_prompt_tokens += LAST_USAGE["prompt_tokens"]
@@ -234,7 +300,7 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
             _maybe_attach_llm_escalation(goal)
 
     # Stage 2: attach deeplinks (same code path regardless of Stage0/1 source)
-    contexts = [enrich_with_deeplinks(g) for g in contexts]
+    contexts = [enrich_with_deeplinks(g, avoid_deeplinks=avoid_deeplinks) for g in contexts]
 
     latency_ms = round((time.time() - start) * 1000, 1)
     real_cost = estimate_cost_usd(total_prompt_tokens, total_completion_tokens)
@@ -258,14 +324,16 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
         },
     }
 
-    if contexts:
-        # Cache the BASE plan (no device data) before applying device
-        # context below -- set_cached() serialises to disk synchronously
-        # (cache.py's json.dump), so the in-place reordering that follows
-        # can never leak into what's persisted for the next caller.
+    if contexts and not avoid_deeplinks:
+        # Cache the BASE plan (no device data, no session-specific deeplink
+        # substitution) before applying device context below -- set_cached()
+        # serialises to disk synchronously (cache.py's json.dump), so the
+        # in-place reordering that follows can never leak into what's
+        # persisted for the next caller.
         set_cached(technical_query, response)
 
     response["meta"]["device_context_notes"] = apply_device_context(contexts, device)
+    response["meta"]["session_notes"] = _summarize_session_avoidance(contexts)
 
     append_log({
         "domain_guess": _guess_topic(technical_query),
@@ -289,13 +357,15 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
 # -- only in how/when the result is delivered.
 # ---------------------------------------------------------------------------
 
-def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: Optional[dict] = None):
+def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: Optional[dict] = None,
+                            session_id: Optional[str] = None):
     """Generator of small dicts: {"stage": ..., "status": "running"|"done"|"error", "data": {...}}.
     Caller (main.py's SSE route) is responsible for JSON-encoding each one."""
     start = time.time()
     total_prompt_tokens = 0
     total_completion_tokens = 0
     used_fallback_any = False
+    avoid_deeplinks = get_avoid_set(session_id)  # Task 36, see run_pipeline()'s comments
 
     try:
         yield {"stage": "start", "status": "done", "data": {"query": raw_complaint}}
@@ -319,14 +389,16 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
             },
         }
 
-        # Fast-path cache check
-        cached = get_cached(technical_query)
+        # Fast-path cache check (Task 36: bypassed when this session has
+        # active avoidance data -- see run_pipeline()'s comments)
+        cached = get_cached(technical_query) if not avoid_deeplinks else None
         if cached:
             cached["meta"]["cache_hit"] = True
             cached["meta"]["latency_ms"] = round((time.time() - start) * 1000, 1)
             cached["meta"]["device_context_notes"] = apply_device_context(
                 cached["response"]["contexts"], device
             )
+            cached["meta"]["session_notes"] = []
             yield {"stage": "cache", "status": "hit"}
             append_log({
                 "domain_guess": _guess_topic(technical_query),
@@ -343,7 +415,8 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
 
         # Stage 1
         yield {"stage": "extract", "status": "running"}
-        extraction, fb1 = stage1_extract(technical_query, siis_response, device=device)
+        extraction, fb1 = stage1_extract(technical_query, siis_response, device=device,
+                                          avoid_deeplinks=avoid_deeplinks)
         used_fallback_any = used_fallback_any or fb1
         if not fb1:
             total_prompt_tokens += LAST_USAGE["prompt_tokens"]
@@ -373,7 +446,7 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
 
         # Stage 2: attach deeplinks
         yield {"stage": "deeplink_match", "status": "running"}
-        contexts = [enrich_with_deeplinks(g) for g in contexts]
+        contexts = [enrich_with_deeplinks(g, avoid_deeplinks=avoid_deeplinks) for g in contexts]
         yield {"stage": "deeplink_match", "status": "done"}
 
         latency_ms = round((time.time() - start) * 1000, 1)
@@ -398,10 +471,11 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
             },
         }
 
-        if contexts:
+        if contexts and not avoid_deeplinks:
             set_cached(technical_query, response)
 
         response["meta"]["device_context_notes"] = apply_device_context(contexts, device)
+        response["meta"]["session_notes"] = _summarize_session_avoidance(contexts)
 
         append_log({
             "domain_guess": _guess_topic(technical_query),

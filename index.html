@@ -230,6 +230,14 @@
 <script>
 const API_BASE = 'http://localhost:8000';
 
+// Task 36: a fresh id per page load stands in for "this troubleshooting
+// session" -- every /v1/troubleshoot call and every thumbs-down on this
+// page shares it, so a match you already marked unhelpful earlier in this
+// tab is steered away from on your next diagnosis here. In-memory only
+// (no localStorage -- see this file's browser-storage restriction notes):
+// reloading the page starts a new session on purpose.
+const SESSION_ID = `demo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
 const complaintInput = document.getElementById('complaintInput');
 const diagnoseBtn = document.getElementById('diagnoseBtn');
 const resultContainer = document.getElementById('resultContainer');
@@ -455,10 +463,12 @@ async function runDiagnosis() {
 
   try {
     const device = deviceContextFromInputs();
+    const payload = { query, session_id: SESSION_ID };
+    if (device) payload.device = device;
     const res = await fetch(`${API_BASE}/v1/troubleshoot`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(device ? { query, device } : { query })
+      body: JSON.stringify(payload)
     });
 
     setApiOnline(true);
@@ -469,7 +479,8 @@ async function runDiagnosis() {
 
     const data = await res.json();
     updateMetrics(data.meta || {});
-    renderContexts(data.response?.contexts || [], query, data.meta?.device_context_notes || []);
+    renderContexts(data.response?.contexts || [], query, data.meta?.device_context_notes || [],
+                   data.meta?.session_notes || []);
 
   } catch (err) {
     setApiOnline(false);
@@ -629,13 +640,18 @@ async function submitFeedback(wid, helpful) {
         action_name: payload.actionName,
         helpful,
         query: payload.query || '',
+        session_id: SESSION_ID,
       }),
     });
     if (!res.ok) throw new Error(`${res.status}`);
     const data = await res.json();
+    // Task 36: thumbs-down also steers THIS browser tab's later diagnoses
+    // away from this exact deeplink (see SESSION_ID above) -- say so, since
+    // the adjustment number alone doesn't make that session-scoped effect
+    // visible.
     statusEl.textContent = helpful
       ? `recorded ✓ (adj ${data.adjustment >= 0 ? '+' : ''}${data.adjustment})`
-      : `recorded ✓ (adj ${data.adjustment >= 0 ? '+' : ''}${data.adjustment})`;
+      : `recorded ✓ -- won't re-suggest this in your next diagnosis here (adj ${data.adjustment >= 0 ? '+' : ''}${data.adjustment})`;
     statusEl.className = `feedback-status text-[10px] font-mono ${helpful ? 'text-cyan' : 'text-red'}`;
   } catch (err) {
     statusEl.textContent = 'failed to send';
@@ -670,10 +686,25 @@ function deviceContextNotesBanner(notes) {
   `;
 }
 
-function renderContexts(contexts, query, deviceContextNotes = []) {
+// Task 36: session_notes live on meta too -- "we already tried this for
+// you" is a fact about this browser tab's history, not about the device
+// or about any one goal's confidence, so it gets its own small banner
+// rather than being folded into either of the other two.
+function sessionNotesBanner(notes) {
+  if (!notes || notes.length === 0) return '';
+  return `
+    <div class="mb-5 bg-violet/10 border border-violet/40 rounded-xl px-4 py-3.5 fade-up">
+      <p class="text-violet font-display font-semibold text-xs mb-2">&#8635; This session's history applied</p>
+      ${notes.map(n => `<p class="text-inkdim text-xs mb-1 last:mb-0">${escapeHtml(n)}</p>`).join('')}
+    </div>
+  `;
+}
+
+function renderContexts(contexts, query, deviceContextNotes = [], sessionNotes = []) {
+  const notesHtml = deviceContextNotesBanner(deviceContextNotes) + sessionNotesBanner(sessionNotes);
   if (!contexts || contexts.length === 0) {
     resultContainer.innerHTML = `
-      ${deviceContextNotesBanner(deviceContextNotes)}
+      ${notesHtml}
       <div class="bg-surface border border-line rounded-2xl p-10 text-center fade-up">
         <p class="text-ink font-display font-semibold mb-1">No match in the diagnostic catalog</p>
         <p class="text-inkdim text-sm">This doesn't map to a known Galaxy fix. Try describing the symptom more specifically.</p>
@@ -682,7 +713,7 @@ function renderContexts(contexts, query, deviceContextNotes = []) {
     return;
   }
 
-  resultContainer.innerHTML = deviceContextNotesBanner(deviceContextNotes) + contexts.map(goal => {
+  resultContainer.innerHTML = notesHtml + contexts.map(goal => {
     const scorePct = Math.round((goal.score || 0) * 100);
     const actions = goal.actions || [];
 

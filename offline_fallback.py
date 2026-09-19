@@ -486,9 +486,10 @@ def _looks_like_ui_action(step: str) -> bool:
                                    "swipe", "screen", "menu"))
 
 
-def _build_single_goal(core: str, siis_response: str) -> dict | None:
+def _build_single_goal(core: str, siis_response: str, avoid_deeplinks=None) -> dict | None:
     """Core single-issue extraction: given ONE problem phrase and the
-    reference text, returns one Goal dict or None (no viable match)."""
+    reference text, returns one Goal dict or None (no viable match).
+    `avoid_deeplinks` (Task 36) passes through to _group_steps()."""
     sections = parse_sections(siis_response)
     scored = [(sec, section_relevance(core, sec)) for sec in sections]
     best_section_relevance = max((s for _, s in scored), default=0.0)
@@ -521,7 +522,7 @@ def _build_single_goal(core: str, siis_response: str) -> dict | None:
     # happens later in pipeline.py (shared Stage 2, same as the LLM path),
     # here we just group consecutive same-category steps loosely by simple
     # keyword clustering so each Action stays screen-sized.
-    actions = _group_steps(steps_with_ctx)
+    actions = _group_steps(steps_with_ctx, avoid_deeplinks=avoid_deeplinks)
     if not actions:
         return None
 
@@ -543,7 +544,8 @@ def _build_single_goal(core: str, siis_response: str) -> dict | None:
     return goal
 
 
-def offline_extract(technical_query: str, siis_response: str, core_problem: str | None = None) -> dict:
+def offline_extract(technical_query: str, siis_response: str, core_problem: str | None = None,
+                     avoid_deeplinks=None) -> dict:
     """Drop-in replacement for stage1_extract()'s return shape:
     {"contexts": [Goal-shaped-dict, ...]}  (empty list = no_match).
 
@@ -555,6 +557,9 @@ def offline_extract(technical_query: str, siis_response: str, core_problem: str 
     was designed to allow. Falls back to the original single-issue
     behaviour whenever no confident split is found, so this is fully
     backward compatible with every already-passing official query.
+
+    `avoid_deeplinks` (Task 36, session_memory.py) passes through to every
+    _build_single_goal() call below.
     """
     if not siis_response or not siis_response.strip():
         return {"contexts": []}
@@ -562,13 +567,13 @@ def offline_extract(technical_query: str, siis_response: str, core_problem: str 
     sub_queries = split_multi_issue(core_problem or technical_query)
     if len(sub_queries) == 1:
         core = core_problem or core_problem_phrase(technical_query)
-        goal = _build_single_goal(core, siis_response)
+        goal = _build_single_goal(core, siis_response, avoid_deeplinks=avoid_deeplinks)
         return {"contexts": [goal] if goal else []}
 
     contexts = []
     for sub_q in sub_queries:
         sub_core = core_problem_phrase(sub_q)
-        goal = _build_single_goal(sub_core, siis_response)
+        goal = _build_single_goal(sub_core, siis_response, avoid_deeplinks=avoid_deeplinks)
         if goal is not None:
             contexts.append(goal)
 
@@ -576,7 +581,7 @@ def offline_extract(technical_query: str, siis_response: str, core_problem: str 
         # None of the sub-issues found grounding -- try once more treating
         # the complaint as a single issue before giving up entirely.
         core = core_problem or core_problem_phrase(technical_query)
-        goal = _build_single_goal(core, siis_response)
+        goal = _build_single_goal(core, siis_response, avoid_deeplinks=avoid_deeplinks)
         return {"contexts": [goal] if goal else []}
 
     contexts.sort(key=lambda g: g["score"], reverse=True)
@@ -648,7 +653,7 @@ def split_multi_issue(query_text: str) -> list[str]:
     return parts
 
 
-def _group_steps(steps_with_ctx: list[tuple[str, str]]) -> list[dict]:
+def _group_steps(steps_with_ctx: list[tuple[str, str]], avoid_deeplinks=None) -> list[dict]:
     """Cluster steps into screen-sized Actions keyed by which catalog
     deeplink they resolve to -- i.e. the one-action-one-screen rule is
     enforced by "do these steps land on the same real Settings screen?",
@@ -656,6 +661,10 @@ def _group_steps(steps_with_ctx: list[tuple[str, str]]) -> list[dict]:
     resolve to any catalog entry become their own manual/no-deeplink
     groups. This reuses the exact same matcher the LLM path's Stage 2
     uses, just called per-step here instead of per-already-grouped-action.
+
+    `avoid_deeplinks` (Task 36, session_memory.py) is threaded straight
+    through to the matcher -- see deeplink_matching.py's
+    best_match_explained() for what it does.
     """
     from deeplink_matching import get_index, to_title_case as dm_title_case, DUMMY_POSITIVE_DEEPLINK
 
@@ -670,7 +679,7 @@ def _group_steps(steps_with_ctx: list[tuple[str, str]]) -> list[dict]:
             group_key = "manual:no-deeplink"
             entry, explanation = None, None
         else:
-            entry, _score, explanation = index.best_match_explained(step)
+            entry, _score, explanation = index.best_match_explained(step, avoid_deeplinks=avoid_deeplinks)
             group_key = entry.id if entry is not None else f"dummy:{step[:24].lower()}"
 
         if group_key not in groups:

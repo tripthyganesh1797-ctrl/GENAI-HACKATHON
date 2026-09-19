@@ -160,3 +160,127 @@ class TestFeedbackDrivenReranking:
         feedback.record_feedback(target.deeplink, "X", helpful=True)
         after = feedback.get_adjustment(target.deeplink)
         assert after > before
+
+
+class TestSessionAvoidance:
+    """Task 36 (session_memory.py): `avoid_deeplinks` on best_match_explained()
+    is a DIFFERENT mechanism from the feedback-driven re-ranking above --
+    global feedback permanently nudges a score for everyone; avoid_deeplinks
+    is per-request and only reorders which of the already-qualifying
+    candidates gets returned, never touching the threshold decision."""
+
+    def test_hybrid_default_is_unaffected_by_empty_or_none_avoid_set(self):
+        index = dm.get_index("hybrid")
+        query = "wifi settings screen"
+        entry_none, score_none, exp_none = index.best_match_explained(query)
+        entry_empty, score_empty, exp_empty = index.best_match_explained(query, avoid_deeplinks=set())
+        assert entry_none.deeplink == entry_empty.deeplink
+        assert score_none == score_empty
+        assert "session_avoid_skipped" not in exp_none
+        assert "already_tried_this_session" not in exp_none
+
+    def test_hybrid_skips_past_avoided_top_match_to_the_next_viable_one(self):
+        index = dm.get_index("hybrid")
+        query = "wifi settings screen"
+        top_entry, _ = index.best_match(query)
+        assert top_entry is not None
+
+        entry, score, explanation = index.best_match_explained(
+            query, avoid_deeplinks={top_entry.deeplink}
+        )
+        assert entry is not None
+        assert entry.deeplink != top_entry.deeplink
+        assert explanation["session_avoid_skipped"] == top_entry.deeplink
+        assert "already_tried_this_session" not in explanation  # the CHOSEN one wasn't avoided
+
+    def test_pick_index_avoiding_falls_back_when_avoided_is_the_only_viable_candidate(self):
+        """The whole point, pinned down directly against the pure helper
+        both index variants share (dm._pick_index_avoiding) rather than a
+        tiny real HybridDeeplinkIndex -- a 1-2 document TF-IDF/SVD corpus
+        is numerically degenerate (near-zero similarities either way) and
+        isn't a meaningful way to exercise this: never turn a real match
+        into a false no-match just because the session already tried it.
+        See session_memory.py's module docstring."""
+        ranked_indices = [0, 1, 2]  # already sorted best-first
+        scores = [0.9, 0.05, 0.02]  # only index 0 clears this threshold
+        deeplinks = ["dl-a", "dl-b", "dl-c"]
+        chosen_i, skipped = dm._pick_index_avoiding(
+            ranked_indices, scores, deeplinks, threshold=0.12, avoid_deeplinks={"dl-a"}
+        )
+        assert chosen_i == 0  # falls back to the avoided (only viable) entry
+        assert skipped is False
+
+    def test_pick_index_avoiding_skips_to_next_viable_candidate(self):
+        ranked_indices = [0, 1, 2]
+        scores = [0.9, 0.7, 0.02]
+        deeplinks = ["dl-a", "dl-b", "dl-c"]
+        chosen_i, skipped = dm._pick_index_avoiding(
+            ranked_indices, scores, deeplinks, threshold=0.12, avoid_deeplinks={"dl-a"}
+        )
+        assert chosen_i == 1
+        assert skipped is True
+
+    def test_pick_index_avoiding_is_a_noop_for_empty_avoid_set(self):
+        ranked_indices = [0, 1, 2]
+        scores = [0.9, 0.7, 0.02]
+        deeplinks = ["dl-a", "dl-b", "dl-c"]
+        chosen_i, skipped = dm._pick_index_avoiding(
+            ranked_indices, scores, deeplinks, threshold=0.12, avoid_deeplinks=set()
+        )
+        assert chosen_i == 0
+        assert skipped is False
+
+    def test_pick_index_avoiding_empty_ranking_returns_sentinel(self):
+        chosen_i, skipped = dm._pick_index_avoiding([], [], [], threshold=0.12, avoid_deeplinks={"x"})
+        assert chosen_i == -1
+        assert skipped is False
+
+    def test_hybrid_avoiding_an_irrelevant_deeplink_changes_nothing(self):
+        index = dm.get_index("hybrid")
+        query = "wifi settings screen"
+        entry_plain, score_plain = index.best_match(query)
+        entry_avoid, score_avoid, _ = index.best_match_explained(
+            query, avoid_deeplinks={"bixby://masked/act/not-in-the-top-results-at-all"}
+        )
+        assert entry_plain.deeplink == entry_avoid.deeplink
+        assert score_plain == score_avoid
+
+    def test_rules_skips_past_avoided_top_match_to_the_next_viable_one(self):
+        entries = dm.load_deeplinks("deeplinks.json")
+        index = dm.RulesDeeplinkIndex(entries)
+        query = "wifi settings screen"
+        top_entry, _ = index.best_match(query)
+        assert top_entry is not None
+
+        entry, score, explanation = index.best_match_explained(
+            query, avoid_deeplinks={top_entry.deeplink}
+        )
+        assert entry is not None
+        assert entry.deeplink != top_entry.deeplink
+        assert explanation["session_avoid_skipped"] == top_entry.deeplink
+
+    def test_rules_falls_back_to_avoided_entry_when_it_is_the_only_viable_match(self):
+        entries = dm.load_deeplinks("deeplinks.json")
+        index = dm.RulesDeeplinkIndex(entries[:1])
+        query = entries[0].description or entries[0].message or "settings"
+        top_entry, top_score = index.best_match(query)
+        assert top_entry is not None
+
+        entry, score, explanation = index.best_match_explained(
+            query, avoid_deeplinks={top_entry.deeplink}
+        )
+        assert entry is not None
+        assert entry.deeplink == top_entry.deeplink
+        assert explanation["already_tried_this_session"] is True
+
+    def test_match_and_build_deeplink_threads_avoid_deeplinks_through(self):
+        index = dm.get_index("hybrid")
+        top_entry, _ = index.best_match("wifi settings screen")
+        assert top_entry is not None
+
+        actionable, _ = dm.match_and_build_deeplink(
+            "Wifi Settings", ["Tap Wifi.", "Toggle Wifi on."], variant="hybrid",
+            avoid_deeplinks={top_entry.deeplink},
+        )
+        assert actionable["deeplink"] != top_entry.deeplink
+        assert actionable["matchExplanation"]["session_avoid_skipped"] == top_entry.deeplink

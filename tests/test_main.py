@@ -99,11 +99,11 @@ class TestBatchTroubleshoot:
         real_run_pipeline = main.run_pipeline
         calls = {"n": 0}
 
-        def flaky(query, siis_response="", device=None):
+        def flaky(query, siis_response="", device=None, session_id=None):
             calls["n"] += 1
             if calls["n"] == 2:
                 raise RuntimeError("simulated per-item crash")
-            return real_run_pipeline(query, siis_response, device=device)
+            return real_run_pipeline(query, siis_response, device=device, session_id=session_id)
 
         monkeypatch.setattr(main, "run_pipeline", flaky)
         res = client.post("/v1/troubleshoot/batch", json={
@@ -232,7 +232,7 @@ class TestDeviceContext:
         import main
         captured = {}
 
-        def fake_run_pipeline(query, siis_response="", device=None):
+        def fake_run_pipeline(query, siis_response="", device=None, session_id=None):
             captured["device"] = device
             return {"query": query, "query_variations": [], "response": {"contexts": []},
                     "meta": {"latency_ms": 1.0, "cache_hit": False, "model": "x",
@@ -247,7 +247,7 @@ class TestDeviceContext:
         import main
         captured = {}
 
-        def fake_run_pipeline(query, siis_response="", device=None):
+        def fake_run_pipeline(query, siis_response="", device=None, session_id=None):
             captured["device"] = device
             return {"query": query, "query_variations": [], "response": {"contexts": []},
                     "meta": {"latency_ms": 1.0, "cache_hit": False, "model": "x",
@@ -273,7 +273,7 @@ class TestDeviceContext:
         import main
         captured = []
 
-        def fake_run_pipeline(query, siis_response="", device=None):
+        def fake_run_pipeline(query, siis_response="", device=None, session_id=None):
             captured.append(device)
             return {"query": query, "query_variations": [], "response": {"contexts": []},
                     "meta": {"latency_ms": 1.0, "cache_hit": False, "model": "x",
@@ -319,3 +319,137 @@ class TestDeviceContext:
                 raw = "".join(res.iter_text())
         events = self._parse_sse_events(raw)
         assert events[-1]["data"]["meta"]["device_context_notes"] == []
+
+
+class TestSessionMemory:
+    """Task 36: session_id wiring at the HTTP boundary -- POST
+    /v1/troubleshoot(/batch), GET /v1/troubleshoot/stream, and POST
+    /v1/feedback all thread it through to run_pipeline()/record_feedback().
+    The actual avoidance/cache-bypass mechanics are covered end-to-end in
+    tests/test_pipeline.py::TestSessionMemory; these only pin down that
+    each route passes the field along correctly."""
+
+    def test_troubleshoot_without_session_id_passes_none(self, monkeypatch, client):
+        import main
+        captured = {}
+
+        def fake_run_pipeline(query, siis_response="", device=None, session_id=None):
+            captured["session_id"] = session_id
+            return {"query": query, "query_variations": [], "response": {"contexts": []},
+                    "meta": {"latency_ms": 1.0, "cache_hit": False, "model": "x",
+                              "cost_usd": 0.0, "device_context_notes": [], "session_notes": []}}
+
+        monkeypatch.setattr(main, "run_pipeline", fake_run_pipeline)
+        res = client.post("/v1/troubleshoot", json={"query": "anything"})
+        assert res.status_code == 200
+        assert captured["session_id"] is None
+
+    def test_troubleshoot_forwards_session_id(self, monkeypatch, client):
+        import main
+        captured = {}
+
+        def fake_run_pipeline(query, siis_response="", device=None, session_id=None):
+            captured["session_id"] = session_id
+            return {"query": query, "query_variations": [], "response": {"contexts": []},
+                    "meta": {"latency_ms": 1.0, "cache_hit": False, "model": "x",
+                              "cost_usd": 0.0, "device_context_notes": [], "session_notes": []}}
+
+        monkeypatch.setattr(main, "run_pipeline", fake_run_pipeline)
+        res = client.post("/v1/troubleshoot", json={"query": "anything", "session_id": "sess-xyz"})
+        assert res.status_code == 200
+        assert captured["session_id"] == "sess-xyz"
+
+    def test_batch_forwards_per_item_session_id(self, monkeypatch, client):
+        import main
+        captured = []
+
+        def fake_run_pipeline(query, siis_response="", device=None, session_id=None):
+            captured.append(session_id)
+            return {"query": query, "query_variations": [], "response": {"contexts": []},
+                    "meta": {"latency_ms": 1.0, "cache_hit": False, "model": "x",
+                              "cost_usd": 0.0, "device_context_notes": [], "session_notes": []}}
+
+        monkeypatch.setattr(main, "run_pipeline", fake_run_pipeline)
+        res = client.post("/v1/troubleshoot/batch", json={"items": [
+            {"query": "a", "session_id": "sess-a"},
+            {"query": "b"},
+        ]})
+        assert res.status_code == 200
+        assert captured[0] == "sess-a"
+        assert captured[1] is None
+
+    def test_stream_forwards_session_id_query_param(self, monkeypatch):
+        import main
+        captured = {}
+
+        def fake_run_pipeline_streaming(query, siis_response="", device=None, session_id=None):
+            captured["session_id"] = session_id
+            yield {"stage": "complete", "status": "done", "data": {
+                "query": query, "query_variations": [], "response": {"contexts": []},
+                "meta": {"latency_ms": 1.0, "cache_hit": False, "model": "x", "cost_usd": 0.0,
+                          "device_context_notes": [], "session_notes": []},
+            }}
+
+        monkeypatch.setattr(main, "run_pipeline_streaming", fake_run_pipeline_streaming)
+        with TestClient(app) as c:
+            with c.stream(
+                "GET", "/v1/troubleshoot/stream",
+                params={"query": "anything", "session_id": "sess-stream"},
+            ) as res:
+                "".join(res.iter_text())
+        assert captured["session_id"] == "sess-stream"
+
+    def test_feedback_forwards_session_id_to_record_feedback(self, monkeypatch, client):
+        import main
+        captured = {}
+
+        def fake_record_feedback(deeplink, action_name, helpful, query="", comment="", session_id=""):
+            captured["session_id"] = session_id
+            return {"helpful": 0, "unhelpful": 1, "action_names": [], "adjustment": 0.0}
+
+        monkeypatch.setattr(main.feedback_module, "record_feedback", fake_record_feedback)
+        res = client.post("/v1/feedback", json={
+            "deeplink": "bixby://masked/act/sess-fb", "action_name": "X",
+            "helpful": False, "session_id": "sess-feedback-1",
+        })
+        assert res.status_code == 200
+        assert captured["session_id"] == "sess-feedback-1"
+
+    def test_feedback_without_session_id_passes_empty_string(self, monkeypatch, client):
+        import main
+        captured = {}
+
+        def fake_record_feedback(deeplink, action_name, helpful, query="", comment="", session_id=""):
+            captured["session_id"] = session_id
+            return {"helpful": 0, "unhelpful": 1, "action_names": [], "adjustment": 0.0}
+
+        monkeypatch.setattr(main.feedback_module, "record_feedback", fake_record_feedback)
+        res = client.post("/v1/feedback", json={
+            "deeplink": "bixby://masked/act/sess-fb2", "action_name": "X", "helpful": False,
+        })
+        assert res.status_code == 200
+        assert captured["session_id"] == ""
+
+    def test_troubleshoot_end_to_end_avoids_previously_unhelpful_action(self, client, real_samples):
+        """Full stack, no monkeypatching: feedback -> session_memory ->
+        pipeline -> deeplink_matching, all through real HTTP calls."""
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        session_id = "e2e-session-1"
+
+        first = client.post("/v1/troubleshoot", json={
+            "query": sample["complaint"], "siis_response": sample["siis_response"],
+        })
+        deeplink = first.json()["response"]["contexts"][0]["actions"][0]["stepGroups"][0]["actionableDeeplink"]["deeplink"]
+
+        fb = client.post("/v1/feedback", json={
+            "deeplink": deeplink, "action_name": "X", "helpful": False, "session_id": session_id,
+        })
+        assert fb.status_code == 200
+
+        second = client.post("/v1/troubleshoot", json={
+            "query": sample["complaint"], "siis_response": sample["siis_response"],
+            "session_id": session_id,
+        })
+        body = second.json()
+        assert body["meta"]["cache_hit"] is False
+        assert len(body["meta"]["session_notes"]) >= 1

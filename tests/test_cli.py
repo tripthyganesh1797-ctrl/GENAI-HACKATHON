@@ -456,3 +456,162 @@ def test_cmd_stream_in_process_prints_error_stage(monkeypatch, capsys):
     cli.cmd_stream(args)
     out = capsys.readouterr().out
     assert "error: simulated stage0 crash" in out
+
+
+# ---------------------------------------------------------------------------
+# Task 36: --session-id on query/stream, and the `feedback` subcommand
+# ---------------------------------------------------------------------------
+
+def test_parser_routes_feedback_subcommand():
+    parser = cli.build_parser()
+    args = parser.parse_args(["feedback", "bixby://masked/act/x", "Wifi Settings"])
+    assert args.func is cli.cmd_feedback
+    assert args.deeplink == "bixby://masked/act/x"
+    assert args.action_name == "Wifi Settings"
+    assert args.unhelpful is False
+    assert args.session_id is None
+
+
+def test_cmd_feedback_in_process_defaults_to_helpful(capsys):
+    parser = cli.build_parser()
+    args = parser.parse_args(["feedback", "bixby://masked/act/cli-fb-1", "Wifi Settings"])
+    cli.cmd_feedback(args)
+    out = json.loads(capsys.readouterr().out)
+    assert out["helpful"] == 1
+    assert out["unhelpful"] == 0
+
+
+def test_cmd_feedback_in_process_unhelpful_with_session_id_feeds_session_memory(capsys):
+    import session_memory
+
+    parser = cli.build_parser()
+    args = parser.parse_args([
+        "feedback", "bixby://masked/act/cli-fb-2", "Wifi Settings",
+        "--unhelpful", "--session-id", "cli-demo-session",
+    ])
+    cli.cmd_feedback(args)
+    out = json.loads(capsys.readouterr().out)
+    assert out["unhelpful"] == 1
+    assert "bixby://masked/act/cli-fb-2" in session_memory.get_avoid_set("cli-demo-session")
+
+
+def test_cmd_feedback_via_api_base_sends_post_and_prints_result(monkeypatch, capsys):
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["body"] = json.loads(req.data)
+        return _FakeResponse({"deeplink": "bixby://masked/act/x", "helpful": 0, "unhelpful": 1,
+                               "action_names": ["Wifi Settings"], "adjustment": -0.05})
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    parser = cli.build_parser()
+    args = parser.parse_args([
+        "--api-base", "http://fake", "feedback", "bixby://masked/act/x", "Wifi Settings",
+        "--unhelpful", "--session-id", "cli-demo-session",
+    ])
+    cli.cmd_feedback(args)
+
+    assert captured["url"] == "http://fake/v1/feedback"
+    assert captured["body"] == {
+        "deeplink": "bixby://masked/act/x", "action_name": "Wifi Settings",
+        "helpful": False, "session_id": "cli-demo-session",
+    }
+    out = json.loads(capsys.readouterr().out)
+    assert out["unhelpful"] == 1
+
+
+def test_cmd_feedback_via_api_base_omits_session_id_when_not_given(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = json.loads(req.data)
+        return _FakeResponse({"deeplink": "x", "helpful": 1, "unhelpful": 0,
+                               "action_names": [], "adjustment": 0.0})
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    parser = cli.build_parser()
+    args = parser.parse_args(["--api-base", "http://fake", "feedback", "x", "Y"])
+    cli.cmd_feedback(args)
+    assert "session_id" not in captured["body"]
+
+
+def test_cmd_feedback_via_api_base_error_status_exits(monkeypatch):
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(
+            "http://fake/v1/feedback", 400, "err", hdrs=None,
+            fp=io.BytesIO(json.dumps({"error": {"message": "boom"}}).encode()),
+        )
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    parser = cli.build_parser()
+    args = parser.parse_args(["--api-base", "http://fake", "feedback", "x", "Y"])
+    with pytest.raises(SystemExit):
+        cli.cmd_feedback(args)
+
+
+def test_cmd_query_in_process_forwards_session_id(monkeypatch):
+    import pipeline as pipeline_module
+    captured = {}
+
+    def fake_run_pipeline(query, siis_response="", device=None, session_id=None):
+        captured["session_id"] = session_id
+        return {"query": query, "response": {"contexts": []},
+                "meta": {"latency_ms": 1.0, "model": "x", "cache_hit": False, "cost_usd": 0.0,
+                          "total_tokens": 0}}
+
+    monkeypatch.setattr(pipeline_module, "run_pipeline", fake_run_pipeline)
+    parser = cli.build_parser()
+    args = parser.parse_args(["query", "anything", "--session-id", "cli-q-session"])
+    cli.cmd_query(args)
+    assert captured["session_id"] == "cli-q-session"
+
+
+def test_cmd_query_via_api_base_includes_session_id_in_payload(monkeypatch, capsys):
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["body"] = json.loads(req.data)
+        return _FakeResponse({
+            "query": "x", "response": {"contexts": []},
+            "meta": {"latency_ms": 1.0, "model": "offline-rule-based",
+                      "cache_hit": False, "cost_usd": 0.0, "total_tokens": 0},
+        })
+
+    monkeypatch.setattr(cli.urllib.request, "urlopen", fake_urlopen)
+    parser = cli.build_parser()
+    args = parser.parse_args([
+        "--api-base", "http://fake", "query", "battery drains fast",
+        "--session-id", "cli-q-session",
+    ])
+    cli.cmd_query(args)
+    assert captured["body"]["session_id"] == "cli-q-session"
+
+
+def test_cmd_stream_in_process_forwards_session_id(monkeypatch, capsys):
+    import pipeline as pipeline_module
+    captured = {}
+
+    def fake_run_pipeline_streaming(raw_complaint, siis_response="", device=None, session_id=None):
+        captured["session_id"] = session_id
+        yield {"stage": "complete", "status": "done", "data": {
+            "query": raw_complaint, "response": {"contexts": []},
+            "meta": {"latency_ms": 1.0, "model": "x", "cache_hit": False, "cost_usd": 0.0,
+                      "total_tokens": 0},
+        }}
+
+    monkeypatch.setattr(pipeline_module, "run_pipeline_streaming", fake_run_pipeline_streaming)
+    parser = cli.build_parser()
+    args = parser.parse_args(["stream", "anything", "--session-id", "cli-stream-session"])
+    cli.cmd_stream(args)
+    assert captured["session_id"] == "cli-stream-session"
+
+
+def test_print_result_shows_session_notes(capsys):
+    cli.print_result({
+        "query": "x", "response": {"contexts": []},
+        "meta": {"latency_ms": 1.0, "model": "x", "cache_hit": False, "cost_usd": 0.0,
+                  "total_tokens": 0, "session_notes": ["1 action skipped from this session"]},
+    })
+    out = capsys.readouterr().out
+    assert "1 action skipped from this session" in out

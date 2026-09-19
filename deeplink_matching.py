@@ -85,6 +85,36 @@ def _matched_keywords(text: str, entry: "DeeplinkEntry", limit: int = 5) -> list
     return sorted(q_toks & e_toks)[:limit]
 
 
+def _pick_index_avoiding(
+    ranked_indices: list[int], scores: list[float], deeplinks: list[str],
+    threshold: float, avoid_deeplinks: frozenset[str] | set[str],
+) -> tuple[int, bool]:
+    """Task 36 (session_memory.py): shared by both index variants'
+    best_match_explained(). `ranked_indices` must already be sorted
+    best-first by `scores`, on whatever scale `threshold` uses. Returns
+    (chosen_index, skipped_an_avoided_entry).
+
+    When the top-ranked candidate isn't in avoid_deeplinks (the common
+    case -- including every call where avoid_deeplinks is empty), this is
+    just `ranked_indices[0]`, unchanged: zero behavior difference from
+    before this parameter existed. Only when the top candidate IS avoided
+    does this walk down to the next one that still clears `threshold` and
+    isn't itself avoided. If nothing qualifies, it falls back to the
+    original top candidate rather than inventing a spurious "no match" --
+    see session_memory.py's module docstring for why."""
+    if not ranked_indices:
+        return -1, False
+    top = ranked_indices[0]
+    if not avoid_deeplinks or deeplinks[top] not in avoid_deeplinks:
+        return top, False
+    for i in ranked_indices[1:]:
+        if scores[i] < threshold:
+            break
+        if deeplinks[i] not in avoid_deeplinks:
+            return i, True
+    return top, False
+
+
 @dataclass
 class DeeplinkEntry:
     id: str
@@ -192,7 +222,7 @@ class HybridDeeplinkIndex:
         return (entry, score) if score >= threshold else (None, score)
 
     def best_match_explained(
-        self, text: str, threshold: float = 0.12
+        self, text: str, threshold: float = 0.12, avoid_deeplinks=None
     ) -> tuple[DeeplinkEntry | None, float, dict]:
         """Same ranking as best_match(), but also returns a JSON-safe
         breakdown of *why* the top entry scored the way it did -- the raw
@@ -200,9 +230,15 @@ class HybridDeeplinkIndex:
         applied on top, and the overlapping keywords a person can sanity-check
         by eye. Used by match_and_build_deeplink() to surface this in the API
         response; best_match() itself is left untouched so existing callers
-        (offline_fallback.py, eval/matchers.py) are unaffected."""
+        (offline_fallback.py, eval/matchers.py) are unaffected.
+
+        `avoid_deeplinks` (Task 36, session_memory.py) is an optional set
+        of deeplinks to skip past in favor of the next viable candidate --
+        see _pick_index_avoiding()'s docstring. None/empty (the default)
+        makes this byte-identical to before that parameter existed."""
         if not self.entries:
             return None, 0.0, {"matcher": "hybrid_bm25_dense", "reason": "empty_index"}
+        avoid_deeplinks = avoid_deeplinks or frozenset()
 
         norm_bm25, norm_dense = self._component_scores(text)
         combined = [self.alpha * b + (1 - self.alpha) * d
@@ -210,21 +246,29 @@ class HybridDeeplinkIndex:
         fb_adj = [feedback.get_adjustment(e.deeplink) for e in self.entries]
         adjusted = [max(0.0, c + a) for c, a in zip(combined, fb_adj)]
 
-        best_i = max(range(len(adjusted)), key=lambda i: adjusted[i])
-        entry, score = self.entries[best_i], adjusted[best_i]
+        ranked_indices = sorted(range(len(adjusted)), key=lambda i: adjusted[i], reverse=True)
+        deeplinks = [e.deeplink for e in self.entries]
+        chosen_i, skipped_avoided = _pick_index_avoiding(
+            ranked_indices, adjusted, deeplinks, threshold, avoid_deeplinks
+        )
+        entry, score = self.entries[chosen_i], adjusted[chosen_i]
 
         explanation = {
             "matcher": "hybrid_bm25_dense",
             "dense_kind": self.dense_kind,
             "alpha": self.alpha,
-            "bm25_component": round(norm_bm25[best_i], 4),
-            "dense_component": round(norm_dense[best_i], 4),
-            "combined_before_feedback": round(combined[best_i], 4),
-            "feedback_adjustment": round(fb_adj[best_i], 4),
+            "bm25_component": round(norm_bm25[chosen_i], 4),
+            "dense_component": round(norm_dense[chosen_i], 4),
+            "combined_before_feedback": round(combined[chosen_i], 4),
+            "feedback_adjustment": round(fb_adj[chosen_i], 4),
             "final_score": round(score, 4),
             "threshold": threshold,
             "matched_keywords": _matched_keywords(text, entry),
         }
+        if skipped_avoided:
+            explanation["session_avoid_skipped"] = deeplinks[ranked_indices[0]]
+        if entry.deeplink in avoid_deeplinks:
+            explanation["already_tried_this_session"] = True
         if score < threshold:
             explanation["rejected_reason"] = "final_score below threshold"
             return None, score, explanation
@@ -257,38 +301,50 @@ class RulesDeeplinkIndex:
         return scored[:top_k]
 
     def best_match_explained(
-        self, text: str, threshold: float = 45.0
+        self, text: str, threshold: float = 45.0, avoid_deeplinks=None
     ) -> tuple[DeeplinkEntry | None, float, dict]:
         """Rules-variant counterpart to HybridDeeplinkIndex.best_match_explained()
         -- same idea (return the winning entry's score components), but for
         the single fuzzy-ratio score this matcher uses instead of a
-        BM25+dense blend."""
-        best_entry, best_fuzzy, best_fb, best_score = None, 0.0, 0.0, 0.0
-        for e in self.entries:
-            fuzzy = fuzz.token_set_ratio(text, e.corpus_text)
-            fb_pts = 100 * feedback.get_adjustment(e.deeplink)
-            score = fuzzy + fb_pts
-            # Same "strictly greater" comparison as best_match() above, so
-            # the two methods never disagree on which entry wins.
-            if score > best_score:
-                best_score, best_entry, best_fuzzy, best_fb = score, e, fuzzy, fb_pts
+        BM25+dense blend. `avoid_deeplinks` (Task 36) works identically to
+        the hybrid variant's -- see _pick_index_avoiding()."""
+        if not self.entries:
+            return None, 0.0, {"matcher": "rules_fuzzy", "reason": "empty_index"}
+        avoid_deeplinks = avoid_deeplinks or frozenset()
 
-        if best_entry is None:
-            reason = "empty_index" if not self.entries else "no_entry_scored_above_zero"
-            return None, 0.0, {"matcher": "rules_fuzzy", "reason": reason}
+        fuzzy_scores = [fuzz.token_set_ratio(text, e.corpus_text) for e in self.entries]
+        fb_pts = [100 * feedback.get_adjustment(e.deeplink) for e in self.entries]
+        scores = [f + p for f, p in zip(fuzzy_scores, fb_pts)]
+
+        ranked_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+        # Original implementation only ever set best_entry on a strictly-
+        # positive score (best_score started at 0.0, compared with ">") --
+        # preserve that: an all-zero-or-negative field is still "no match".
+        if scores[ranked_indices[0]] <= 0.0:
+            return None, 0.0, {"matcher": "rules_fuzzy", "reason": "no_entry_scored_above_zero"}
+
+        deeplinks = [e.deeplink for e in self.entries]
+        chosen_i, skipped_avoided = _pick_index_avoiding(
+            ranked_indices, scores, deeplinks, threshold, avoid_deeplinks
+        )
+        entry, best_score = self.entries[chosen_i], scores[chosen_i]
 
         explanation = {
             "matcher": "rules_fuzzy",
-            "fuzzy_score": round(best_fuzzy, 2),
-            "feedback_adjustment_pts": round(best_fb, 2),
+            "fuzzy_score": round(fuzzy_scores[chosen_i], 2),
+            "feedback_adjustment_pts": round(fb_pts[chosen_i], 2),
             "final_score_pts": round(best_score, 2),
             "threshold_pts": threshold,
-            "matched_keywords": _matched_keywords(text, best_entry),
+            "matched_keywords": _matched_keywords(text, entry),
         }
+        if skipped_avoided:
+            explanation["session_avoid_skipped"] = deeplinks[ranked_indices[0]]
+        if entry.deeplink in avoid_deeplinks:
+            explanation["already_tried_this_session"] = True
         if best_score < threshold:
             explanation["rejected_reason"] = "final_score below threshold"
             return None, best_score / 100.0, explanation
-        return best_entry, best_score / 100.0, explanation
+        return entry, best_score / 100.0, explanation
 
 
 _INDEX_CACHE: dict[str, HybridDeeplinkIndex | RulesDeeplinkIndex] = {}
@@ -321,12 +377,15 @@ def to_title_case(text: str) -> str:
 
 def match_and_build_deeplink(action_name: str, steps: list[str],
                               variant: str = "hybrid",
-                              path: str = "deeplinks.json") -> tuple[dict, dict | None]:
+                              path: str = "deeplinks.json",
+                              avoid_deeplinks=None) -> tuple[dict, dict | None]:
     """Used by pipeline.py's Stage 2. Returns (actionableDeeplink dict,
-    validationDeeplink dict | None)."""
+    validationDeeplink dict | None). `avoid_deeplinks` (Task 36) is an
+    optional set of deeplinks this session already tried and marked
+    unhelpful -- see session_memory.py."""
     index = get_index(variant, path)
     query_text = action_name + " " + " ".join(steps)
-    entry, score, explanation = index.best_match_explained(query_text)
+    entry, score, explanation = index.best_match_explained(query_text, avoid_deeplinks=avoid_deeplinks)
 
     if entry is not None:
         actionable = {

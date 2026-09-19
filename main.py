@@ -122,7 +122,8 @@ def troubleshoot(payload: TroubleshootRequest, request: Request):
     # unhandled_exception_handler above, which returns the same structured
     # {"error": {...}} shape every other failure mode in this service uses.
     device = payload.device.model_dump(exclude_none=True) if payload.device else None
-    result = run_pipeline(payload.query, payload.siis_response or "", device=device)
+    result = run_pipeline(payload.query, payload.siis_response or "", device=device,
+                           session_id=payload.session_id)
     result.setdefault("meta", {})["request_id"] = request.state.request_id
     return result
 
@@ -144,7 +145,8 @@ def troubleshoot_batch(payload: BatchTroubleshootRequest, request: Request):
     for item in payload.items:
         try:
             device = item.device.model_dump(exclude_none=True) if item.device else None
-            result = run_pipeline(item.query, item.siis_response or "", device=device)
+            result = run_pipeline(item.query, item.siis_response or "", device=device,
+                                   session_id=item.session_id)
             results.append({"ok": True, "result": result})
         except Exception as e:
             results.append({"ok": False, "error": str(e), "query": item.query})
@@ -165,6 +167,7 @@ def troubleshoot_stream(
     os_version: str = Query(None),
     uptime_hours: float = Query(None, ge=0),
     last_restart_hours_ago: float = Query(None, ge=0),
+    session_id: str = Query(None, description="Task 36: optional session-scoped avoidance"),
 ):
     """Server-Sent Events version of /v1/troubleshoot -- same pipeline, same
     final payload, but emits one event per stage (enrich -> cache check ->
@@ -189,7 +192,7 @@ def troubleshoot_stream(
     device = {k: v for k, v in device_raw.items() if v is not None} or None
 
     def event_source():
-        for event in run_pipeline_streaming(query, siis_response, device=device):
+        for event in run_pipeline_streaming(query, siis_response, device=device, session_id=session_id):
             yield f"data: {json.dumps(event)}\n\n"
 
     return StreamingResponse(
@@ -222,6 +225,7 @@ def submit_feedback(payload: FeedbackRequest, request: Request):
         helpful=payload.helpful,
         query=payload.query or "",
         comment=payload.comment or "",
+        session_id=payload.session_id or "",
     )
     return {"status": "recorded", "request_id": request.state.request_id, **result}
 

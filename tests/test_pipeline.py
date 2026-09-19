@@ -76,7 +76,7 @@ class TestEscalation:
         and a low self-reported score must carry escalation by the time
         run_pipeline() returns -- exercised through the real function,
         not just the helper in isolation."""
-        def fake_stage1(technical_query, siis_response, force_offline=False, device=None):
+        def fake_stage1(technical_query, siis_response, force_offline=False, device=None, avoid_deeplinks=None):
             goal = {
                 "goal": "Follow these steps to perform this Test Issue Troubleshooting",
                 "title": "Test issue",
@@ -92,7 +92,7 @@ class TestEscalation:
         assert goal["escalation"]["recommended"] is True
 
     def test_llm_path_goal_high_score_flows_through_without_escalation(self, monkeypatch):
-        def fake_stage1(technical_query, siis_response, force_offline=False, device=None):
+        def fake_stage1(technical_query, siis_response, force_offline=False, device=None, avoid_deeplinks=None):
             goal = {
                 "goal": "Follow these steps to perform this Test Issue Troubleshooting",
                 "title": "Test issue",
@@ -219,7 +219,7 @@ class TestDeviceContext:
         assert len(second["meta"]["device_context_notes"]) == 1
 
     def test_end_to_end_reorders_actions_via_device_context(self, monkeypatch):
-        def fake_stage1(technical_query, siis_response, force_offline=False, device=None):
+        def fake_stage1(technical_query, siis_response, force_offline=False, device=None, avoid_deeplinks=None):
             goal = {
                 "goal": "Follow these steps to perform this Battery Troubleshooting",
                 "title": "Battery drain",
@@ -250,6 +250,170 @@ class TestDeviceContext:
         ))
         assert events[-1]["stage"] == "complete"
         assert len(events[-1]["data"]["meta"]["device_context_notes"]) == 1
+
+
+class TestSessionMemory:
+    """Task 36 (session_memory.py): a session that already got thumbs-down
+    feedback on a specific deeplink shouldn't casually see it suggested
+    again for a follow-up call in the SAME session. Two things to pin
+    down: (1) the matching itself steers away from the avoided deeplink
+    when it can (tests/test_deeplink_matching.py::TestSessionAvoidance
+    covers the matcher-level mechanics in depth), and (2) the trickier
+    part done here -- the semantic cache is bypassed entirely for a
+    request carrying active avoidance data, so a stale cached entry
+    (resolved under a different, or no, avoidance state) can never
+    silently reintroduce the exact deeplink this feature exists to avoid."""
+
+    def test_no_session_id_has_empty_session_notes(self, real_samples):
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        result = pipeline.run_pipeline(sample["complaint"], sample["siis_response"])
+        assert result["meta"]["session_notes"] == []
+
+    def test_unknown_session_id_behaves_like_no_session_id(self, real_samples):
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        result = pipeline.run_pipeline(
+            sample["complaint"], sample["siis_response"], session_id="never-gave-feedback"
+        )
+        assert result["meta"]["session_notes"] == []
+        assert result["meta"]["cache_hit"] is False
+
+    def test_repeat_call_with_plain_session_still_uses_cache(self, real_samples):
+        """A session_id with NO avoidance history yet must not disable
+        caching -- only active avoidance data does that (see below)."""
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        first = pipeline.run_pipeline(
+            sample["complaint"], sample["siis_response"], session_id="quiet-session"
+        )
+        assert first["meta"]["cache_hit"] is False
+        second = pipeline.run_pipeline(
+            sample["complaint"], sample["siis_response"], session_id="quiet-session"
+        )
+        assert second["meta"]["cache_hit"] is True
+        assert second["meta"]["session_notes"] == []
+
+    def test_avoidance_feedback_bypasses_cache_and_changes_the_match(self, real_samples):
+        import feedback
+        import session_memory
+
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        session_id = "session-with-a-failed-action"
+
+        first = pipeline.run_pipeline(sample["complaint"], sample["siis_response"])
+        assert first["meta"]["cache_hit"] is False
+        goal = first["response"]["contexts"][0]
+        action = goal["actions"][0]
+        sg = action["stepGroups"][0]
+        deeplink = sg["actionableDeeplink"]["deeplink"]
+
+        # Simulate: the user tried this exact action, it didn't help, and
+        # told us so via POST /v1/feedback with a session_id attached.
+        feedback.record_feedback(deeplink, action["actionName"], helpful=False,
+                                  query=sample["complaint"], session_id=session_id)
+        assert deeplink in session_memory.get_avoid_set(session_id)
+
+        second = pipeline.run_pipeline(
+            sample["complaint"], sample["siis_response"], session_id=session_id
+        )
+        # Cache bypass: this must be freshly computed, not the cached
+        # first-call result (which still has the now-avoided deeplink
+        # baked in from before any feedback existed).
+        assert second["meta"]["cache_hit"] is False
+        assert len(second["meta"]["session_notes"]) >= 1
+
+        second_goal = second["response"]["contexts"][0]
+        second_action = second_goal["actions"][0]
+        second_sg = second_action["stepGroups"][0]
+        second_exp = second_sg["actionableDeeplink"].get("matchExplanation") or {}
+        # Either the matcher found a different real option (most catalog
+        # domains have more than one candidate deeplink) or it fell back to
+        # the same one, honestly flagged as already tried -- either way the
+        # avoidance signal must have visibly reached Stage 2.
+        assert (
+            second_sg["actionableDeeplink"]["deeplink"] != deeplink
+            or second_exp.get("already_tried_this_session") is True
+        )
+
+    def test_avoidance_active_session_never_populates_the_cache(self, real_samples):
+        import feedback
+
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        session_id = "session-that-never-caches"
+
+        first = pipeline.run_pipeline(sample["complaint"], sample["siis_response"])
+        deeplink = first["response"]["contexts"][0]["actions"][0]["stepGroups"][0]["actionableDeeplink"]["deeplink"]
+        feedback.record_feedback(deeplink, "X", helpful=False,
+                                  query=sample["complaint"], session_id=session_id)
+
+        # Two consecutive calls with the SAME active-avoidance session_id:
+        # if the cache were being written to despite the bypass, the
+        # second call would come back as a cache hit.
+        pipeline.run_pipeline(sample["complaint"], sample["siis_response"], session_id=session_id)
+        third = pipeline.run_pipeline(sample["complaint"], sample["siis_response"], session_id=session_id)
+        assert third["meta"]["cache_hit"] is False
+
+    def test_summarize_session_avoidance_reports_skip(self):
+        contexts = [{
+            "actions": [{
+                "actionName": "Wifi Settings",
+                "stepGroups": [{
+                    "actionableDeeplink": {
+                        "deeplink": "bixby://masked/act/new",
+                        "matchExplanation": {"session_avoid_skipped": "bixby://masked/act/old"},
+                    },
+                }],
+            }],
+        }]
+        notes = pipeline._summarize_session_avoidance(contexts)
+        assert len(notes) == 1
+        assert "1 previously-tried match" in notes[0]
+
+    def test_summarize_session_avoidance_reports_repeat(self):
+        contexts = [{
+            "actions": [{
+                "actionName": "Wifi Settings",
+                "stepGroups": [{
+                    "actionableDeeplink": {
+                        "deeplink": "bixby://masked/act/old",
+                        "matchExplanation": {"already_tried_this_session": True},
+                    },
+                }],
+            }],
+        }]
+        notes = pipeline._summarize_session_avoidance(contexts)
+        assert len(notes) == 1
+        assert "Wifi Settings" in notes[0]
+
+    def test_summarize_session_avoidance_empty_for_no_flags(self):
+        contexts = [{
+            "actions": [{
+                "actionName": "Wifi Settings",
+                "stepGroups": [{
+                    "actionableDeeplink": {
+                        "deeplink": "bixby://masked/act/x",
+                        "matchExplanation": {},
+                    },
+                }],
+            }],
+        }]
+        assert pipeline._summarize_session_avoidance(contexts) == []
+
+    def test_streaming_also_bypasses_cache_for_active_avoidance(self, real_samples):
+        import feedback
+
+        sample = next(s for s in real_samples if s.get("siis_response"))
+        session_id = "streaming-session-with-a-failed-action"
+
+        first = pipeline.run_pipeline(sample["complaint"], sample["siis_response"])
+        deeplink = first["response"]["contexts"][0]["actions"][0]["stepGroups"][0]["actionableDeeplink"]["deeplink"]
+        feedback.record_feedback(deeplink, "X", helpful=False,
+                                  query=sample["complaint"], session_id=session_id)
+
+        events = list(pipeline.run_pipeline_streaming(
+            sample["complaint"], sample["siis_response"], session_id=session_id
+        ))
+        assert events[-1]["stage"] == "complete"
+        assert events[-1]["data"]["meta"]["cache_hit"] is False
+        assert len(events[-1]["data"]["meta"]["session_notes"]) >= 1
 
 
 class TestStreamingParity:
@@ -299,7 +463,7 @@ class TestStreamingParity:
         """The streaming variant duplicates the validate+escalation loop
         (it can't share run_pipeline()'s code directly since it yields
         progress between stages) -- must not have silently drifted."""
-        def fake_stage1(technical_query, siis_response, force_offline=False, device=None):
+        def fake_stage1(technical_query, siis_response, force_offline=False, device=None, avoid_deeplinks=None):
             goal = {
                 "goal": "Follow these steps to perform this Test Issue Troubleshooting",
                 "title": "Test issue",

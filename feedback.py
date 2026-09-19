@@ -22,6 +22,8 @@ import math
 import time
 from pathlib import Path
 
+import session_memory
+
 FEEDBACK_LOG_PATH = Path("feedback_log.jsonl")
 FEEDBACK_SCORES_PATH = Path("feedback_scores.json")
 
@@ -54,9 +56,16 @@ def _save_scores() -> None:
 
 
 def record_feedback(deeplink: str, action_name: str, helpful: bool,
-                     query: str = "", comment: str = "") -> dict:
-    """Appends the raw event to the log and updates the running aggregate
-    for this deeplink. Returns the updated aggregate for that deeplink."""
+                     query: str = "", comment: str = "", session_id: str = "") -> dict:
+    """Appends the raw event to the log and updates the running GLOBAL
+    aggregate for this deeplink (shared across every caller -- see this
+    module's docstring). Returns the updated aggregate for that deeplink.
+
+    Separately (Task 36), when session_id is truthy AND helpful is False,
+    also records this deeplink into session_memory.py's per-session avoid
+    list -- a distinct, session-scoped mechanism (see session_memory.py's
+    module docstring for why these two are kept apart rather than folded
+    together)."""
     event = {
         "timestamp": time.time(),
         "deeplink": deeplink,
@@ -64,6 +73,7 @@ def record_feedback(deeplink: str, action_name: str, helpful: bool,
         "helpful": bool(helpful),
         "query": query,
         "comment": comment,
+        "session_id": session_id,
     }
     with FEEDBACK_LOG_PATH.open("a") as f:
         f.write(json.dumps(event) + "\n")
@@ -74,6 +84,8 @@ def record_feedback(deeplink: str, action_name: str, helpful: bool,
         agg["helpful"] += 1
     else:
         agg["unhelpful"] += 1
+        if session_id:
+            session_memory.record_unhelpful(session_id, deeplink)
     if action_name and action_name not in agg["action_names"]:
         agg["action_names"].append(action_name)
     _save_scores()

@@ -119,6 +119,13 @@ class TroubleshootRequest(BaseModel):
     query: str
     siis_response: Optional[str] = None
     device: Optional[DeviceContext] = None
+    # Task 36 (session_memory.py): entirely caller-supplied and opt-in --
+    # an arbitrary caller-chosen string identifying "the same troubleshooting
+    # conversation" across multiple requests, so a later call in the same
+    # session can avoid re-suggesting an action this session already tried
+    # and marked unhelpful via POST /v1/feedback. No session_id anywhere ->
+    # this feature is a complete no-op.
+    session_id: Optional[str] = None
 
 
 class Meta(BaseModel):
@@ -128,6 +135,7 @@ class Meta(BaseModel):
     cost_usd: float
     fallback: Optional[str] = None
     device_context_notes: List[str] = []
+    session_notes: List[str] = []
 
 
 class TroubleshootResponse(BaseModel):
@@ -141,6 +149,7 @@ class BatchTroubleshootItem(BaseModel):
     query: str
     siis_response: Optional[str] = None
     device: Optional[DeviceContext] = None
+    session_id: Optional[str] = None
 
 
 class BatchTroubleshootRequest(BaseModel):
@@ -157,9 +166,13 @@ class BatchTroubleshootRequest(BaseModel):
 class FeedbackRequest(BaseModel):
     """POST /v1/feedback -- thumbs up/down on one matched deeplink from a
     previous /v1/troubleshoot(/stream) response. Drives the adaptive
-    re-ranking in deeplink_matching.py (see feedback.py)."""
+    re-ranking in deeplink_matching.py (see feedback.py), and -- when
+    session_id is supplied and helpful=False -- also feeds session_memory.py
+    (Task 36) so THIS session's later requests can avoid re-suggesting the
+    exact same deeplink."""
     deeplink: str                    # the actionableDeeplink.deeplink string returned earlier
     action_name: str                 # the actionName it was attached to, for readability in logs
     helpful: bool
     query: Optional[str] = None      # original complaint, for traceability
     comment: Optional[str] = None
+    session_id: Optional[str] = None

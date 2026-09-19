@@ -122,3 +122,30 @@ def test_batch_item_accepts_device_context():
         {"query": "battery drains fast", "device": {"battery_pct": 5}},
     ])
     assert req.items[0].device.battery_pct == 5
+
+
+def test_troubleshoot_request_session_id_is_optional():
+    req = TroubleshootRequest(query="battery drains fast")
+    assert req.session_id is None
+    req2 = TroubleshootRequest(query="battery drains fast", session_id="abc-123")
+    assert req2.session_id == "abc-123"
+
+
+def test_batch_item_session_id_is_optional():
+    req = BatchTroubleshootRequest(items=[
+        {"query": "battery drains fast", "session_id": "abc-123"},
+    ])
+    assert req.items[0].session_id == "abc-123"
+
+
+def test_feedback_request_session_id_is_optional():
+    fb = FeedbackRequest(deeplink="bixby://masked/act/x", action_name="Wifi Settings", helpful=False)
+    assert fb.session_id is None
+    fb2 = FeedbackRequest(deeplink="bixby://masked/act/x", action_name="Wifi Settings",
+                           helpful=False, session_id="abc-123")
+    assert fb2.session_id == "abc-123"
+
+
+def test_meta_session_notes_defaults_to_empty_list():
+    meta = Meta(latency_ms=1.0, cache_hit=False, model="x", cost_usd=0.0)
+    assert meta.session_notes == []
