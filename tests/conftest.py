@@ -27,12 +27,19 @@ def _isolated_state_files(tmp_path, monkeypatch):
     import cache
     import request_log
     import feedback
+    import middleware
 
     monkeypatch.setattr(cache, "CACHE_FILE", str(tmp_path / "cache_store.json"))
     monkeypatch.setattr(request_log, "LOG_FILE", str(tmp_path / "request_log.jsonl"))
     monkeypatch.setattr(feedback, "FEEDBACK_LOG_PATH", tmp_path / "feedback_log.jsonl")
     monkeypatch.setattr(feedback, "FEEDBACK_SCORES_PATH", tmp_path / "feedback_scores.json")
     monkeypatch.setattr(feedback, "_scores_cache", None)
+    # The rate limiters in middleware.py are process-wide singletons (by
+    # design -- they track real client traffic across the app's lifetime),
+    # so reset them between tests or an earlier test's requests could trip
+    # a later test's rate limit and make the suite flaky/order-dependent.
+    middleware.troubleshoot_limiter.reset()
+    middleware.feedback_limiter.reset()
     yield
     monkeypatch.setattr(feedback, "_scores_cache", None)
 

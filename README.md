@@ -19,7 +19,7 @@ switch — whenever `LLM_API_KEY` isn't set, or an LLM call/JSON-parse fails
 after retries. `meta.used_offline_fallback` in every response says which
 path actually ran.
 
-**Contents:** [Architecture](#architecture) · [Setup](#setup) · [Run the pipeline directly](#run-the-pipeline-directly-no-server-needed-fastest-way-to-test) · [Run the API server](#run-the-api-server) · [Run the tests](#run-the-tests) · [Run with Docker](#run-with-docker) · [Try the demo UI](#try-the-demo-ui) · [Project structure](#project-structure) · [Submission checklist](#submission-checklist-per-hackathon_guidelinespdf) · [Known limitations](#known-limitations)
+**Contents:** [Architecture](#architecture) · [Setup](#setup) · [Run the pipeline directly](#run-the-pipeline-directly-no-server-needed-fastest-way-to-test) · [Run the API server](#run-the-api-server) · [Run the tests](#run-the-tests) · [Run with Docker](#run-with-docker) · [Try the demo UI](#try-the-demo-ui) · [Project structure](#project-structure) · [Production-readiness notes](#production-readiness-notes) · [Submission checklist](#submission-checklist-per-hackathon_guidelinespdf) · [Known limitations](#known-limitations)
 
 ## Architecture
 
@@ -35,10 +35,12 @@ flowchart TD
 
     subgraph API["FastAPI (main.py)"]
         direction TB
+        MW["middleware.py: request ID -> rate limit -> CORS"]
         EP1["POST /v1/troubleshoot"]
         EP2["GET /v1/troubleshoot/stream (SSE)"]
         EP3["POST /v1/feedback"]
-        EP4["GET /stats · /health"]
+        EP4["GET /stats · /health (rate-limit exempt)"]
+        MW --> EP1 & EP2 & EP3 & EP4
     end
 
     EP1 --> S0
@@ -134,7 +136,7 @@ curl -X POST http://localhost:8000/v1/feedback \
 
 ```bash
 pip install -r requirements.txt   # includes pytest / httpx (dev-only, see bottom of the file)
-pytest                             # 86 tests, ~90% line coverage, runs in ~10s, no LLM key needed
+pytest                             # 98 tests, ~92% line coverage, runs in ~15s, no LLM key needed
 pytest --cov=. --cov-report=term-missing   # optional, needs pytest-cov (already in requirements.txt)
 ```
 
@@ -197,7 +199,32 @@ and a screen-reader-friendly table view, not mock data.
 | `eval/run_ablation.py` + `eval/matchers.py` | 3-variant deeplink-matching ablation (Full-LLM / Hybrid BM25+dense / Pure rules) against `eval/deeplink_ground_truth.json` (real catalog entries) |
 | `request_log.py` | Per-request JSONL log, powers `/stats` |
 | `feedback.py` | Human-in-the-loop feedback (`POST /v1/feedback`) + the bounded per-deeplink score adjustment that `deeplink_matching.py` consults on every search |
-| `tests/` | pytest suite, ~90% line coverage, zero LLM key required — see "Run the tests" above |
+| `middleware.py` | Request IDs, structured `{"error": {...}}` bodies, and per-route in-memory rate limiting |
+| `tests/` | pytest suite, ~92% line coverage, zero LLM key required — see "Run the tests" above |
+
+## Production-readiness notes
+
+Every response — success or error, including 429s — carries an
+`X-Request-ID` header (echoed back if the caller supplies one, so a
+client-side trace ID survives the round trip). Every error the service
+returns, whatever raised it (a validation failure, an unknown route, a
+rejected feedback submission, an uncaught exception), comes back in the
+same shape:
+
+```json
+{"error": {"code": "400", "message": "...", "request_id": "..."}}
+```
+
+`/v1/troubleshoot` (and its `/stream` variant) and `/v1/feedback` are each
+rate-limited per client IP (30 req/min and 60 req/min respectively — tuned
+for interactive demo/judge traffic, not a load test); `/health` is exempt
+so uptime checks never trip it. The limiter is in-process and in-memory,
+which is the right call for this submission's actual deployment shape (a
+single `uvicorn` process — see the Dockerfile, no orchestration implied
+anywhere else in this repo) and is genuinely enforced, not just logged;
+it just doesn't coordinate across multiple replicas, which a real
+multi-instance deployment would need a shared store (e.g. Redis) for
+instead. See `middleware.py` for all of this.
 
 ## Submission checklist (per Hackathon_Guidelines.pdf)
 
