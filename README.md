@@ -132,6 +132,20 @@ cp .env.example .env            # optional — only needed for the LLM path
 The service works with **zero setup beyond `pip install`** — without a
 `.env`/`LLM_API_KEY` it just runs entirely on the offline fallback path.
 
+**If you edit `.env` after the server is already running, you must fully
+restart it (`Ctrl+C`, then re-run `uvicorn main:app --reload`).**
+`--reload` only watches `.py` source files for changes, not `.env` —
+`llm_client.py` reads `LLM_API_KEY`/`LLM_MODEL`/`LLM_PROVIDER` once at
+import time, so a running process keeps using whatever `.env` said when
+it first started until you restart it, even though the file on disk now
+says something else. Also make sure `.env` actually sets `LLM_API_KEY`
+(not `OPENAI_API_KEY` or `GROQ_API_KEY`) — that's the exact variable
+name this project's code reads; setting a differently-named variable
+can silently "work" (the `openai` Python SDK falls back to
+`OPENAI_API_KEY` on its own if `LLM_API_KEY`/`api_key` comes through as
+`None`) but leaves `LLM_MODEL` pointed at whatever stale default was
+loaded at startup, which is a confusing failure mode to debug.
+
 This includes a real person typing their **own** complaint with nothing
 else supplied (no reference text to paste in) — e.g. `"my battery is
 getting drained quickly"` on the offline path grounds itself in
