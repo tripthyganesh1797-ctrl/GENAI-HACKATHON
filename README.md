@@ -41,6 +41,15 @@ Beyond the core troubleshooting pipeline, the service also ships:
   forward to someone else.
 - **Voice output** — `index.html`'s results panel can read the current
   plan aloud via the Web Speech API, alongside the existing voice *input*.
+- **Physical-hazard safety short-circuit** (`safety.py`) — a swollen/
+  bulging battery, smoke, sparking, or a burning/chemical smell is a real
+  fire/burn risk, not a normal troubleshooting scenario. A narrow,
+  deterministic keyword check runs before anything else (before Stage 0,
+  before the cache) on both execution paths and, when it fires, replaces
+  the plan entirely with a single "stop using, don't charge, contact
+  Samsung Support" instruction — never software steps for this class of
+  complaint. `meta.safety_alert` / `meta.safety_reason` flag it for any
+  API/CLI/UI consumer; `index.html` renders an unmissable red banner.
 
 **Contents:** [Architecture](#architecture) · [Setup](#setup) · [Run the pipeline directly](#run-the-pipeline-directly-no-server-needed-fastest-way-to-test) · [Run the API server](#run-the-api-server) · [Run the tests](#run-the-tests) · [Run with Docker](#run-with-docker) · [Try the demo UI](#try-the-demo-ui) · [Project structure](#project-structure) · [Production-readiness notes](#production-readiness-notes) · [Submission checklist](#submission-checklist-per-hackathon_guidelinespdf) · [Known limitations](#known-limitations)
 
@@ -279,6 +288,7 @@ with hover tooltips and a screen-reader-friendly table view, not mock data.
 | `escalation.py` | Shared confidence-gated escalation recommendation — attaches an honest caveat + real backup action to a low-confidence Goal without ever replacing the plan |
 | `device_signals.py` | Optional device-state context (battery/storage/uptime) — reorders same-category actions toward what's relevant, adds an advisory note; a no-op when omitted |
 | `session_memory.py` | Session-scoped avoidance: a deeplink marked unhelpful (with a `session_id`) is steered away from in that session's later requests — distinct from `feedback.py`'s global re-ranking |
+| `safety.py` | Physical-hazard short-circuit (swollen battery, smoke, fire, sparks, chemical smell, burns) — narrow keyword-based detection that replaces the plan with a single "stop, don't charge, contact Samsung Support" Goal, on both execution paths, before Stage 0 or the cache ever runs |
 | `report.py` | Packages an already-computed result into a shareable Markdown/HTML report (`POST /v1/report`) — a pure formatter, never re-runs the pipeline |
 | `pipeline.py` | Orchestrates: complaint → enrich → extract → validate → deeplink match → cache, choosing LLM vs offline path per-request |
 | `cache.py` | Fast-path semantic cache (keyword overlap) |
