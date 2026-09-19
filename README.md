@@ -167,6 +167,11 @@ Point it at a running `uvicorn` server (`API_BASE` at the top of the
 `<script>` block, defaults to `http://localhost:8000`). `demo.html` is a
 simpler, earlier version of the same UI kept for reference.
 
+Click **telemetry** in the top-right to open the **analytics dashboard**:
+live stat tiles, a requests-by-domain bar chart, and a helpful/unhelpful
+feedback breakdown — all real numbers from `/stats`, with hover tooltips
+and a screen-reader-friendly table view, not mock data.
+
 ## Project structure
 
 | File | Purpose |

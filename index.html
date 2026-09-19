@@ -179,20 +179,23 @@
   </div>
 </div>
 
-<!-- TELEMETRY DRAWER -->
+<!-- TELEMETRY / ANALYTICS DRAWER -->
 <div id="telemetryDrawer" class="fixed inset-x-0 bottom-0 translate-y-full transition-transform duration-300 ease-out z-40">
   <div class="max-w-7xl mx-auto px-5 lg:px-8">
-    <div class="bg-surface2 border border-line border-b-0 rounded-t-2xl p-5 shadow-2xl">
+    <div class="bg-surface2 border border-line border-b-0 rounded-t-2xl p-5 shadow-2xl max-h-[82vh] overflow-y-auto">
       <div class="flex items-center justify-between mb-4">
-        <p class="font-mono text-xs text-inkdim">system_telemetry ── /stats</p>
+        <p class="font-mono text-xs text-inkdim">system_telemetry ── /stats · live, computed from real request/feedback logs</p>
         <button id="closeTelemetry" class="text-inkdim hover:text-ink text-xs font-mono">close ✕</button>
       </div>
-      <div id="telemetryBody" class="grid grid-cols-2 md:grid-cols-4 gap-4 pb-2">
-        <div class="text-inkdim text-xs font-mono col-span-4">loading…</div>
+      <div id="telemetryBody">
+        <div class="text-inkdim text-xs font-mono">loading…</div>
       </div>
     </div>
   </div>
 </div>
+
+<!-- Shared chart tooltip (single instance, repositioned per hover) -->
+<div id="chartTooltip" class="hidden fixed z-50 pointer-events-none bg-void border border-line rounded-lg px-2.5 py-1.5 text-xs font-mono text-ink shadow-xl"></div>
 
 <script>
 const API_BASE = 'http://localhost:8000';
@@ -556,22 +559,171 @@ closeTelemetry.addEventListener('click', () => {
   telemetryDrawer.classList.add('translate-y-full');
 });
 
+// ---------------------------------------------------------------------------
+// Analytics dashboard -- stat tiles + two small inline-SVG charts, all built
+// from real /stats output (request_log.jsonl + feedback aggregates), never
+// mock data. See dataviz notes inline: single-series bars get one hue (no
+// per-category rainbow -- the axis label already carries identity); the
+// 2-series feedback bar gets a legend + direct labels since color there
+// *does* carry independent meaning (helpful vs unhelpful).
+// ---------------------------------------------------------------------------
+
+const tooltip = document.getElementById('chartTooltip');
+
+function showTooltip(evt, html) {
+  tooltip.innerHTML = html;
+  tooltip.classList.remove('hidden');
+  moveTooltip(evt);
+}
+function moveTooltip(evt) {
+  const pad = 14;
+  tooltip.style.left = `${evt.clientX + pad}px`;
+  tooltip.style.top = `${evt.clientY + pad}px`;
+}
+function hideTooltip() {
+  tooltip.classList.add('hidden');
+}
+
+function statTile(label, value, colorClass = 'text-ink') {
+  return `
+    <div class="bg-void/60 border border-line rounded-xl px-3.5 py-3">
+      <div class="text-inkdim text-[10px] font-mono uppercase tracking-wider mb-1">${escapeHtml(label)}</div>
+      <div class="${colorClass} font-mono font-semibold text-lg">${value}</div>
+    </div>
+  `;
+}
+
+// Single-series horizontal bar chart. One hue throughout (violet, the app's
+// existing "confidence" accent) -- each bar's own row label already
+// identifies it, so a per-bar categorical color would encode nothing real.
+function domainBarChart(domainCounts) {
+  const entries = Object.entries(domainCounts || {}).sort((a, b) => b[1] - a[1]);
+  if (entries.length === 0) {
+    return `<p class="text-inkdim text-xs font-mono">no requests logged yet</p>`;
+  }
+  const total = entries.reduce((sum, [, c]) => sum + c, 0);
+  const max = Math.max(...entries.map(([, c]) => c));
+  const rowH = 26, barMaxW = 100; // percent width of track
+
+  const rows = entries.map(([domain, count], i) => {
+    const pct = max > 0 ? (count / max) * barMaxW : 0;
+    const share = total > 0 ? Math.round((count / total) * 100) : 0;
+    return `
+      <div class="flex items-center gap-3" style="height:${rowH}px"
+           onmouseenter="showTooltip(event, '<b>${escapeHtml(domain)}</b><br>${count} request${count === 1 ? '' : 's'} (${share}%)')"
+           onmousemove="moveTooltip(event)" onmouseleave="hideTooltip()">
+        <div class="w-20 shrink-0 text-inkdim text-[11px] font-mono truncate">${escapeHtml(domain)}</div>
+        <div class="flex-1 bg-void rounded-full h-[10px] relative overflow-hidden">
+          <div class="bg-violet h-full rounded-full transition-all" style="width:${pct}%"></div>
+        </div>
+        <div class="w-8 shrink-0 text-ink text-[11px] font-mono text-right">${count}</div>
+      </div>
+    `;
+  }).join('');
+
+  return `<div class="space-y-1.5">${rows}</div>`;
+}
+
+// Two-series stacked bar (helpful vs unhelpful). Color carries real,
+// independent meaning here, so it gets a legend + direct segment labels --
+// reusing the app's existing status hues (cyan = good, red = critical).
+function feedbackBar(feedback) {
+  const helpful = feedback?.helpful ?? 0;
+  const unhelpful = feedback?.unhelpful ?? 0;
+  const total = helpful + unhelpful;
+  if (total === 0) {
+    return `<p class="text-inkdim text-xs font-mono">no feedback submitted yet -- try the 👍/👎 buttons under a matched deeplink</p>`;
+  }
+  const helpfulPct = Math.round((helpful / total) * 100);
+  const unhelpfulPct = 100 - helpfulPct;
+
+  return `
+    <div>
+      <div class="flex items-center gap-4 mb-2 text-[11px] font-mono">
+        <span class="flex items-center gap-1.5 text-inkdim"><span class="w-2.5 h-2.5 rounded-full bg-cyan inline-block"></span>helpful (${helpful})</span>
+        <span class="flex items-center gap-1.5 text-inkdim"><span class="w-2.5 h-2.5 rounded-full bg-red inline-block"></span>unhelpful (${unhelpful})</span>
+      </div>
+      <div class="flex h-[18px] rounded-full overflow-hidden bg-void">
+        ${helpful > 0 ? `<div class="bg-cyan h-full flex items-center justify-center text-void text-[10px] font-mono font-semibold"
+             style="width:${helpfulPct}%"
+             onmouseenter="showTooltip(event, '${helpful} helpful vote${helpful === 1 ? '' : 's'} (${helpfulPct}%)')"
+             onmousemove="moveTooltip(event)" onmouseleave="hideTooltip()">${helpfulPct >= 12 ? helpfulPct + '%' : ''}</div>` : ''}
+        ${unhelpful > 0 ? `<div class="bg-red h-full flex items-center justify-center text-void text-[10px] font-mono font-semibold"
+             style="width:${unhelpfulPct}%"
+             onmouseenter="showTooltip(event, '${unhelpful} unhelpful vote${unhelpful === 1 ? '' : 's'} (${unhelpfulPct}%)')"
+             onmousemove="moveTooltip(event)" onmouseleave="hideTooltip()">${unhelpfulPct >= 12 ? unhelpfulPct + '%' : ''}</div>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function statsTableView(s) {
+  const rows = [
+    ['Total requests', s.total_requests ?? 0],
+    ['Avg latency', `${s.avg_latency_ms ?? 0}ms`],
+    ['P95 latency', `${s.p95_latency_ms ?? 0}ms`],
+    ['Cache hit rate', `${Math.round((s.cache_hit_rate || 0) * 100)}%`],
+    ['No-match rate', `${Math.round((s.no_match_rate || 0) * 100)}%`],
+    ['Total tokens', s.total_tokens ?? 0],
+    ['Total cost', `$${(s.total_cost_usd ?? 0).toFixed(4)}`],
+    ['Feedback events', s.feedback?.total_feedback_events ?? 0],
+    ['Feedback helpful rate', s.feedback?.helpful_rate != null ? `${Math.round(s.feedback.helpful_rate * 100)}%` : '—'],
+  ];
+  return `
+    <table class="w-full text-[11px] font-mono">
+      <tbody>
+        ${rows.map(([k, v]) => `
+          <tr class="border-b border-line/60">
+            <td class="py-1.5 text-inkdim">${escapeHtml(k)}</td>
+            <td class="py-1.5 text-ink text-right">${escapeHtml(String(v))}</td>
+          </tr>`).join('')}
+        ${Object.entries(s.requests_by_domain || {}).map(([d, c]) => `
+          <tr class="border-b border-line/60">
+            <td class="py-1.5 text-inkdim">Requests — ${escapeHtml(d)}</td>
+            <td class="py-1.5 text-ink text-right">${c}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
 async function loadTelemetry() {
-  telemetryBody.innerHTML = `<div class="text-inkdim text-xs font-mono col-span-4">loading…</div>`;
+  telemetryBody.innerHTML = `<div class="text-inkdim text-xs font-mono">loading…</div>`;
   try {
     const res = await fetch(`${API_BASE}/stats`);
     if (!res.ok) throw new Error(`Server returned ${res.status}`);
     const s = await res.json();
     const cacheRatePct = Math.round((s.cache_hit_rate || 0) * 100);
+    const noMatchPct = Math.round((s.no_match_rate || 0) * 100);
 
     telemetryBody.innerHTML = `
-      <div><div class="text-inkdim text-[10px] font-mono uppercase tracking-wider">requests</div><div class="text-ink font-mono font-semibold text-lg">${s.total_requests ?? 0}</div></div>
-      <div><div class="text-inkdim text-[10px] font-mono uppercase tracking-wider">cache hit rate</div><div class="text-amber font-mono font-semibold text-lg">${cacheRatePct}%</div></div>
-      <div><div class="text-inkdim text-[10px] font-mono uppercase tracking-wider">p95 latency</div><div class="text-cyan font-mono font-semibold text-lg">${s.p95_latency_ms ?? 0}ms</div></div>
-      <div><div class="text-inkdim text-[10px] font-mono uppercase tracking-wider">total cost</div><div class="text-ink font-mono font-semibold text-lg">$${(s.total_cost_usd ?? 0).toFixed(4)}</div></div>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+        ${statTile('requests served', s.total_requests ?? 0)}
+        ${statTile('cache hit rate', cacheRatePct + '%', 'text-amber')}
+        ${statTile('no-match rate', noMatchPct + '%', noMatchPct > 30 ? 'text-red' : 'text-ink')}
+        ${statTile('p95 latency', (s.p95_latency_ms ?? 0) + 'ms', 'text-cyan')}
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-5 mb-2">
+        <div class="bg-void/40 border border-line rounded-xl p-4">
+          <p class="font-mono text-[10px] text-inkdim uppercase tracking-wider mb-3">requests by domain</p>
+          ${domainBarChart(s.requests_by_domain)}
+        </div>
+        <div class="bg-void/40 border border-line rounded-xl p-4">
+          <p class="font-mono text-[10px] text-inkdim uppercase tracking-wider mb-3">deeplink match feedback (${s.feedback?.deeplinks_with_feedback ?? 0} deeplinks rated)</p>
+          ${feedbackBar(s.feedback)}
+        </div>
+      </div>
+
+      <details class="mt-1">
+        <summary class="text-inkdim text-[11px] font-mono cursor-pointer hover:text-ink select-none">table view (all numbers, screen-reader friendly)</summary>
+        <div class="mt-2 bg-void/40 border border-line rounded-xl p-4">
+          ${statsTableView(s)}
+        </div>
+      </details>
     `;
   } catch (err) {
-    telemetryBody.innerHTML = `<div class="text-red text-xs font-mono col-span-4">couldn't reach ${API_BASE}/stats</div>`;
+    telemetryBody.innerHTML = `<div class="text-red text-xs font-mono">couldn't reach ${API_BASE}/stats</div>`;
   }
 }
 
