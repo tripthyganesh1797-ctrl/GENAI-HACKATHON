@@ -8,7 +8,7 @@ enums, deeplink verbatim match, etc.).
 
 from enum import Enum
 from typing import Dict, List, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class BaseDeeplink(BaseModel):
@@ -93,6 +93,22 @@ class TroubleshootResponse(BaseModel):
     query_variations: List[str] = []
     response: ContextDeeplinkResponse
     meta: Meta
+
+
+class BatchTroubleshootItem(BaseModel):
+    query: str
+    siis_response: Optional[str] = None
+
+
+class BatchTroubleshootRequest(BaseModel):
+    """POST /v1/troubleshoot/batch -- runs several complaints through the
+    same pipeline as /v1/troubleshoot in one HTTP round trip (e.g. a device
+    health-check screen that wants results for 5-10 known symptom probes
+    at once, without 5-10 separate requests). Capped at 20 items/request --
+    this is a convenience batching endpoint, not a bulk-import job queue;
+    see main.py's batch_limiter for why the per-request rate limit is
+    tighter here than on the single-item endpoint."""
+    items: List[BatchTroubleshootItem] = Field(..., min_length=1, max_length=20)
 
 
 class FeedbackRequest(BaseModel):

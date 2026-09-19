@@ -130,6 +130,13 @@ curl -N "http://localhost:8000/v1/troubleshoot/stream?query=screen+flickers+and+
 curl -X POST http://localhost:8000/v1/feedback \
   -H "Content-Type: application/json" \
   -d '{"deeplink": "bixby://masked/act/...", "action_name": "Battery Settings", "helpful": true}'
+
+# Batch: up to 20 complaints in one round trip (e.g. a device health-check
+# screen probing several known symptoms at once). One item failing doesn't
+# fail the others -- each result is reported individually as {"ok": ...}.
+curl -X POST http://localhost:8000/v1/troubleshoot/batch \
+  -H "Content-Type: application/json" \
+  -d '{"items": [{"query": "battery drains fast"}, {"query": "screen flickers"}]}'
 ```
 
 ## Run the tests

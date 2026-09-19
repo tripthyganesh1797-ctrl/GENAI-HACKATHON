@@ -140,6 +140,10 @@
             → out_of_scope_fallback
           </button>
         </div>
+        <button id="batchDemoBtn"
+          class="w-full text-left text-xs font-mono text-violet hover:text-white border border-violet/40 hover:bg-violet/20 rounded-md px-3 py-2 mt-2.5 transition-colors duration-150">
+          ⚡ run all 5 in one /v1/troubleshoot/batch call
+        </button>
       </div>
     </aside>
 
@@ -281,6 +285,93 @@ complaintInput.addEventListener('keydown', (e) => {
     runDiagnosis();
   }
 });
+
+const batchDemoBtn = document.getElementById('batchDemoBtn');
+batchDemoBtn.addEventListener('click', runBatchDemo);
+
+// Demonstrates POST /v1/troubleshoot/batch live: sends all 5 quick_test
+// complaints in a single HTTP round trip instead of 5 separate ones, and
+// renders a compact per-item summary (this intentionally does NOT reuse
+// renderContexts() -- a batch response is a list of independent pipeline
+// results, not one set of Goal contexts, so it gets its own renderer below).
+async function runBatchDemo() {
+  const items = Array.from(document.querySelectorAll('.preset-btn')).map(b => ({ query: b.dataset.q }));
+
+  batchDemoBtn.disabled = true;
+  batchDemoBtn.classList.add('opacity-50');
+  resultContainer.innerHTML = `
+    <div class="relative bg-surface border border-line rounded-2xl py-16 text-center overflow-hidden">
+      <div class="absolute left-0 right-0 h-24 bg-gradient-to-b from-violet/0 via-violet/10 to-violet/0 scan-line"></div>
+      <p class="text-violet font-mono text-sm relative">running ${items.length} complaints through /v1/troubleshoot/batch…</p>
+    </div>
+  `;
+  resetMetrics();
+
+  try {
+    const res = await fetch(`${API_BASE}/v1/troubleshoot/batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items })
+    });
+
+    setApiOnline(true);
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Server returned ${res.status}: ${errText}`);
+    }
+
+    const data = await res.json();
+    renderBatchResults(data, items);
+
+  } catch (err) {
+    setApiOnline(false);
+    resultContainer.innerHTML = `
+      <div class="bg-red/10 border border-red/40 rounded-2xl p-6 fade-up">
+        <p class="text-red font-display font-semibold mb-1">Connection lost</p>
+        <p class="text-red/70 text-sm">Backend unreachable at ${API_BASE}. Confirm uvicorn is running.</p>
+        <p class="text-red/50 text-xs mt-3 font-mono">${escapeHtml(err.message)}</p>
+      </div>
+    `;
+  } finally {
+    batchDemoBtn.disabled = false;
+    batchDemoBtn.classList.remove('opacity-50');
+  }
+}
+
+function renderBatchResults(data, items) {
+  const rows = (data.results || []).map((r, i) => {
+    const query = escapeHtml(items[i]?.query || '');
+    if (!r.ok) {
+      return `
+        <div class="border border-red/30 bg-red/10 rounded-lg px-3 py-2.5">
+          <p class="text-ink text-xs font-mono mb-1">${query}</p>
+          <p class="text-red text-xs font-mono">✗ error: ${escapeHtml(r.error || '')}</p>
+        </div>`;
+    }
+    const contexts = r.result?.response?.contexts || [];
+    const noMatch = contexts.length === 0;
+    const actionCount = contexts.reduce((n, c) => n + (c.actions?.length || 0), 0);
+    const latency = r.result?.meta?.latency_ms;
+    return `
+      <div class="border border-line bg-void rounded-lg px-3 py-2.5">
+        <p class="text-ink text-xs font-mono mb-1">${query}</p>
+        <p class="${noMatch ? 'text-amber' : 'text-cyan'} text-xs font-mono">
+          ${noMatch ? '— no match in diagnostic catalog' : `✓ ${contexts.length} goal(s), ${actionCount} action(s)`}
+          ${latency != null ? `<span class="text-inkdim">· ${latency}ms</span>` : ''}
+        </p>
+      </div>`;
+  }).join('');
+
+  resultContainer.innerHTML = `
+    <div class="fade-up">
+      <p class="text-inkdim text-xs font-mono mb-3">
+        batch complete — ${data.succeeded}/${data.count} succeeded
+        <span class="text-inkdim/70">· request_id ${escapeHtml(data.request_id || '')}</span>
+      </p>
+      <div class="space-y-2">${rows}</div>
+    </div>
+  `;
+}
 
 async function checkHealth() {
   try {

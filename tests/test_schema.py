@@ -3,7 +3,8 @@ import pytest
 from pydantic import ValidationError
 
 from schema import (
-    Action, ActionCategory, FeedbackRequest, Goal, StepGroup, TroubleshootRequest,
+    Action, ActionCategory, BatchTroubleshootRequest, FeedbackRequest, Goal,
+    StepGroup, TroubleshootRequest,
 )
 
 
@@ -48,3 +49,14 @@ def test_feedback_request_requires_deeplink_action_helpful():
     fb = FeedbackRequest(deeplink="bixby://masked/act/x", action_name="Wifi Settings", helpful=False)
     assert fb.query is None
     assert fb.comment is None
+
+
+def test_batch_request_enforces_one_to_twenty_items():
+    with pytest.raises(ValidationError):
+        BatchTroubleshootRequest(items=[])
+    with pytest.raises(ValidationError):
+        BatchTroubleshootRequest(items=[{"query": f"q{i}"} for i in range(21)])
+
+    req = BatchTroubleshootRequest(items=[{"query": "battery drains fast"}])
+    assert len(req.items) == 1
+    assert req.items[0].siis_response is None

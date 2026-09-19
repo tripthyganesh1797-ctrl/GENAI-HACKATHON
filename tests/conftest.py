@@ -40,6 +40,7 @@ def _isolated_state_files(tmp_path, monkeypatch):
     # a later test's rate limit and make the suite flaky/order-dependent.
     middleware.troubleshoot_limiter.reset()
     middleware.feedback_limiter.reset()
+    middleware.batch_limiter.reset()
     yield
     monkeypatch.setattr(feedback, "_scores_cache", None)
 

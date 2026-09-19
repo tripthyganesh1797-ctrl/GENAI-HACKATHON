@@ -16,7 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from schema import TroubleshootRequest, FeedbackRequest
+from schema import TroubleshootRequest, FeedbackRequest, BatchTroubleshootRequest
 
 from pipeline import run_pipeline, run_pipeline_streaming, llm_available
 from request_log import compute_stats
@@ -24,7 +24,7 @@ from deeplink_matching import get_index, DUMMY_POSITIVE_DEEPLINK
 import feedback as feedback_module
 from middleware import (
     RequestIDMiddleware, RateLimitMiddleware, error_body,
-    troubleshoot_limiter, feedback_limiter,
+    troubleshoot_limiter, feedback_limiter, batch_limiter,
 )
 
 _startup_info = {}
@@ -56,6 +56,7 @@ app.add_middleware(
     RateLimitMiddleware,
     limiter_by_prefix={
         "/v1/troubleshoot": troubleshoot_limiter,  # covers both POST and the /stream GET
+        "/v1/troubleshoot/batch": batch_limiter,   # longest-prefix-wins over the line above
         "/v1/feedback": feedback_limiter,
     },
 )
@@ -123,6 +124,34 @@ def troubleshoot(payload: TroubleshootRequest, request: Request):
     result = run_pipeline(payload.query, payload.siis_response or "")
     result.setdefault("meta", {})["request_id"] = request.state.request_id
     return result
+
+
+@app.post("/v1/troubleshoot/batch")
+def troubleshoot_batch(payload: BatchTroubleshootRequest, request: Request):
+    """Runs up to 20 complaints through the same run_pipeline() a single
+    /v1/troubleshoot call uses, in one HTTP round trip -- e.g. a device
+    health-check screen probing several known symptoms at once. One bad
+    item (a pipeline exception on that item specifically) is reported
+    inline as {"ok": false, "error": ...} at its own index rather than
+    failing the whole batch; every other item's real result still comes
+    back. Route registered *before* the bare "/v1/troubleshoot" POST route
+    in this file doesn't matter for FastAPI's routing (it matches on the
+    full path, not prefix-order) -- only middleware.py's rate limiting
+    needed the explicit longest-prefix-wins fix for that ordering concern.
+    """
+    results = []
+    for item in payload.items:
+        try:
+            result = run_pipeline(item.query, item.siis_response or "")
+            results.append({"ok": True, "result": result})
+        except Exception as e:
+            results.append({"ok": False, "error": str(e), "query": item.query})
+    return {
+        "request_id": request.state.request_id,
+        "count": len(results),
+        "succeeded": sum(1 for r in results if r["ok"]),
+        "results": results,
+    }
 
 
 @app.get("/v1/troubleshoot/stream")

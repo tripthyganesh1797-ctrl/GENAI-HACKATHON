@@ -75,6 +75,68 @@ def test_troubleshoot_stream_emits_sse_events(real_samples):
     assert '"stage": "complete"' in events[-1]
 
 
+class TestBatchTroubleshoot:
+    def test_runs_multiple_items_and_reports_counts(self, client, real_samples):
+        grounded = [s for s in real_samples if s.get("siis_response")][:2]
+        res = client.post("/v1/troubleshoot/batch", json={
+            "items": [{"query": s["complaint"], "siis_response": s["siis_response"]} for s in grounded],
+        })
+        assert res.status_code == 200
+        body = res.json()
+        assert body["count"] == len(grounded)
+        assert body["succeeded"] == len(grounded)
+        assert len(body["results"]) == len(grounded)
+        for r in body["results"]:
+            assert r["ok"] is True
+            assert "response" in r["result"] and "meta" in r["result"]
+        assert "X-Request-ID" in res.headers
+        assert body["request_id"] == res.headers["X-Request-ID"]
+
+    def test_one_bad_item_does_not_fail_the_whole_batch(self, client, real_samples, monkeypatch):
+        import main
+        real_run_pipeline = main.run_pipeline
+        calls = {"n": 0}
+
+        def flaky(query, siis_response=""):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("simulated per-item crash")
+            return real_run_pipeline(query, siis_response)
+
+        monkeypatch.setattr(main, "run_pipeline", flaky)
+        res = client.post("/v1/troubleshoot/batch", json={
+            "items": [{"query": "a"}, {"query": "b"}, {"query": "c"}],
+        })
+        assert res.status_code == 200
+        body = res.json()
+        assert body["count"] == 3
+        assert body["succeeded"] == 2
+        assert body["results"][0]["ok"] is True
+        assert body["results"][1]["ok"] is False
+        assert "simulated per-item crash" in body["results"][1]["error"]
+        assert body["results"][2]["ok"] is True
+
+    def test_rejects_empty_or_oversized_batches(self, client):
+        res_empty = client.post("/v1/troubleshoot/batch", json={"items": []})
+        assert res_empty.status_code == 422
+
+        res_too_big = client.post("/v1/troubleshoot/batch", json={
+            "items": [{"query": f"q{i}"} for i in range(21)],
+        })
+        assert res_too_big.status_code == 422
+
+    def test_batch_has_its_own_tighter_rate_limit(self, monkeypatch):
+        monkeypatch.setattr(middleware.batch_limiter, "max_requests", 1)
+        with TestClient(app) as c:
+            first = c.post("/v1/troubleshoot/batch", json={"items": [{"query": "x"}]})
+            assert first.status_code == 200
+            second = c.post("/v1/troubleshoot/batch", json={"items": [{"query": "x"}]})
+            assert second.status_code == 429
+            # the single-item endpoint has its own separate, more generous limit
+            unaffected = c.post("/v1/troubleshoot", json={"query": "x"})
+            assert unaffected.status_code == 200
+
+
 def test_feedback_records_and_rejects_placeholder(client):
     res = client.post("/v1/feedback", json={
         "deeplink": "bixby://masked/act/doesnotmatter",

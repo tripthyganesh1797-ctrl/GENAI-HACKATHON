@@ -90,6 +90,14 @@ class RateLimiter:
 troubleshoot_limiter = RateLimiter(max_requests=30, window_seconds=60.0)
 feedback_limiter = RateLimiter(max_requests=60, window_seconds=60.0)
 
+# /v1/troubleshoot/batch runs up to 20 full pipeline calls per HTTP request
+# (see schema.BatchTroubleshootRequest) -- counting it against the same
+# 30/min budget as a single-item request would let a client do 20x the
+# actual pipeline work per rate-limit window just by batching, silently
+# defeating the point of the limiter. Its own tighter, separate budget
+# closes that gap.
+batch_limiter = RateLimiter(max_requests=6, window_seconds=60.0)
+
 # Endpoints that must never be rate-limited: judges/CI hitting /health in a
 # loop is expected traffic, not abuse.
 _EXEMPT_PATHS = {"/health"}
@@ -104,13 +112,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path in _EXEMPT_PATHS:
             return await call_next(request)
 
-        limiter = None
-        for prefix, lim in self.limiter_by_prefix.items():
-            if request.url.path.startswith(prefix):
-                limiter = lim
-                break
-        if limiter is None:
+        # Longest-prefix-wins: lets a more specific route (e.g.
+        # "/v1/troubleshoot/batch") carry its own limiter even though it
+        # also starts with a broader registered prefix (e.g.
+        # "/v1/troubleshoot") -- without this, whichever prefix happened to
+        # be inserted into the dict first would always shadow the other.
+        matches = [(prefix, lim) for prefix, lim in self.limiter_by_prefix.items()
+                   if request.url.path.startswith(prefix)]
+        if not matches:
             return await call_next(request)
+        limiter = max(matches, key=lambda pair: len(pair[0]))[1]
 
         client_key = request.client.host if request.client else "unknown"
         allowed, retry_after = limiter.check(client_key)
