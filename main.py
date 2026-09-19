@@ -233,7 +233,10 @@ def submit_feedback(payload: FeedbackRequest, request: Request):
 @app.get("/stats")
 def stats():
     """Live aggregate metrics across every request this server has processed:
-    avg/P95 latency, cache hit rate, no-match rate, total tokens/cost, and a
-    breakdown of requests by domain. Real numbers for your metrics report,
-    computed from actual usage rather than a handful of manual test runs."""
+    avg/P95 latency, cache hit rate, no-match rate, total tokens/cost, a
+    breakdown of requests by domain, and (Task 37) a "trending issues" top-N
+    breakdown of the actual recurring symptoms (e.g. "Battery draining
+    fast") rather than just the coarse domain bucket. Real numbers for your
+    metrics report, computed from actual usage rather than a handful of
+    manual test runs."""
     return {**compute_stats(), "feedback": feedback_module.feedback_summary()}

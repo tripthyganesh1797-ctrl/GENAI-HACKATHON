@@ -477,3 +477,81 @@ class TestStreamingParity:
         assert events[-1]["stage"] == "complete"
         goal = events[-1]["data"]["response"]["contexts"][0]
         assert goal.get("escalation") is not None
+
+
+class TestIssuePhraseGuessing:
+    """Task 37: _guess_issue_phrase() is the finer-grained sibling of
+    _guess_topic() (5 domain buckets) -- it powers /stats's 'trending
+    issues' breakdown, so it needs its own direct coverage rather than
+    being exercised only incidentally through run_pipeline()."""
+
+    def test_battery_draining(self):
+        assert pipeline._guess_issue_phrase("battery drains too fast") == "Battery draining fast"
+
+    def test_battery_charging(self):
+        assert pipeline._guess_issue_phrase("battery not charging overnight") == "Battery not charging"
+
+    def test_camera_blurry(self):
+        assert pipeline._guess_issue_phrase("camera photos are blurry") == "Camera blurry / out of focus"
+
+    def test_camera_crashing(self):
+        assert pipeline._guess_issue_phrase("camera app keeps crashing") == "Camera app crashing"
+
+    def test_wifi_connectivity(self):
+        assert pipeline._guess_issue_phrase("wifi keeps disconnecting") == "Wi-Fi connectivity"
+
+    def test_bluetooth_connectivity(self):
+        assert pipeline._guess_issue_phrase("bluetooth won't pair with my earbuds") == "Bluetooth connectivity"
+
+    def test_overheating(self):
+        assert pipeline._guess_issue_phrase("phone is overheating during calls") == "Device overheating"
+
+    def test_screen_flickering(self):
+        assert pipeline._guess_issue_phrase("screen flickers randomly") == "Screen flickering"
+
+    def test_screen_cracked(self):
+        assert pipeline._guess_issue_phrase("screen is cracked in the corner") == "Screen cracked / physical damage"
+
+    def test_black_screen(self):
+        assert pipeline._guess_issue_phrase("phone shows a black screen on boot") == "Black / blank screen"
+
+    def test_touchscreen_unresponsive(self):
+        assert pipeline._guess_issue_phrase("touch screen is unresponsive") == "Touchscreen unresponsive"
+
+    def test_storage_full(self):
+        assert pipeline._guess_issue_phrase("storage is full and can't install apps") == "Storage full"
+
+    def test_app_crashing(self):
+        assert pipeline._guess_issue_phrase("the app keeps crashing on launch") == "App crashing"
+
+    def test_software_update(self):
+        assert pipeline._guess_issue_phrase("software update failed to install") == "Software update issue"
+
+    def test_running_slow(self):
+        assert pipeline._guess_issue_phrase("phone is very slow and laggy") == "Device running slow"
+
+    def test_speaker_audio(self):
+        assert pipeline._guess_issue_phrase("speaker sound is distorted") == "Speaker / audio issue"
+
+    def test_microphone(self):
+        assert pipeline._guess_issue_phrase("microphone not picking up my voice") == "Microphone issue"
+
+    def test_network_signal(self):
+        assert pipeline._guess_issue_phrase("no network signal in my area") == "Network / signal issue"
+
+    def test_unmatched_query_falls_back_to_domain_plus_issue(self):
+        """Nothing here matches a specific phrase, so it must fall back to
+        '<domain> issue' (never crash, never return an empty string)."""
+        result = pipeline._guess_issue_phrase("something is wrong with my device")
+        assert result == "Device issue"
+        assert result == f"{pipeline._guess_topic('something is wrong with my device')} issue"
+
+    def test_run_pipeline_populates_issue_guess_in_the_request_log(self):
+        """End-to-end: a real run_pipeline() call must log a specific
+        issue_guess (not just domain_guess), so /stats's trending-issues
+        breakdown reflects real traffic. request_log.LOG_FILE is already
+        redirected to a scratch path by conftest.py's autouse fixture."""
+        import request_log
+        pipeline.run_pipeline("my battery is draining super fast today", "")
+        logs = request_log.read_all_logs()
+        assert logs[-1]["issue_guess"] == "Battery draining fast"

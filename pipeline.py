@@ -76,6 +76,58 @@ def _guess_topic(technical_query: str) -> str:
     return "Device"
 
 
+# Task 37: finer-grained than _guess_topic()'s 5 domain buckets. Powers the
+# /stats "trending issues" breakdown -- a real recurring symptom ("battery
+# draining fast", "screen flickering") is far more actionable for a team
+# triaging complaints than a coarse domain count, which request_log.py
+# already surfaces separately as requests_by_domain. Deliberately simple
+# keyword matching (same style as _guess_topic above, same offline-first
+# philosophy as the rest of this codebase) rather than an LLM call -- this
+# runs on every request, including ones served entirely offline.
+def _guess_issue_phrase(technical_query: str) -> str:
+    """Best-effort human-readable issue label for a technical_query. Falls
+    back to '<domain> issue' (never crashes, never returns empty) so every
+    logged request still counts toward some trending-issues bucket."""
+    q = technical_query.lower()
+    if "battery" in q and any(k in q for k in ("drain", "die", "dying", "dies")):
+        return "Battery draining fast"
+    if "battery" in q and "charg" in q:
+        return "Battery not charging"
+    if "camera" in q and ("blur" in q or "focus" in q):
+        return "Camera blurry / out of focus"
+    if "camera" in q and "crash" in q:
+        return "Camera app crashing"
+    if "wifi" in q or "wi-fi" in q:
+        return "Wi-Fi connectivity"
+    if "bluetooth" in q:
+        return "Bluetooth connectivity"
+    if "overheat" in q or "too hot" in q or "overheating" in q:
+        return "Device overheating"
+    if "flicker" in q:
+        return "Screen flickering"
+    if "crack" in q:
+        return "Screen cracked / physical damage"
+    if "black" in q or "blank" in q:
+        return "Black / blank screen"
+    if "touch" in q and any(k in q for k in ("unresponsive", "not working", "not respond", "stuck")):
+        return "Touchscreen unresponsive"
+    if "storage" in q and "full" in q:
+        return "Storage full"
+    if "app" in q and "crash" in q:
+        return "App crashing"
+    if "update" in q:
+        return "Software update issue"
+    if "slow" in q or "lag" in q or "performance" in q:
+        return "Device running slow"
+    if "speaker" in q or "audio" in q or "sound" in q:
+        return "Speaker / audio issue"
+    if "microphone" in q or "mic " in q or q.endswith("mic"):
+        return "Microphone issue"
+    if "signal" in q or "network" in q:
+        return "Network / signal issue"
+    return f"{_guess_topic(technical_query)} issue"
+
+
 def _format_device_context_block(device: Optional[dict]) -> str:
     """Renders schema.DeviceContext's fields (already validated, plain
     dict) into the "Known device state" block STAGE1_EXTRACTION_PROMPT
@@ -267,6 +319,7 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
         cached["meta"]["session_notes"] = []  # avoid_deeplinks is empty on every cache hit
         append_log({
             "domain_guess": _guess_topic(technical_query),
+            "issue_guess": _guess_issue_phrase(technical_query),
             "cache_hit": True,
             "latency_ms": cached["meta"]["latency_ms"],
             "total_tokens": 0,
@@ -337,6 +390,7 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
 
     append_log({
         "domain_guess": _guess_topic(technical_query),
+        "issue_guess": _guess_issue_phrase(technical_query),
         "cache_hit": False,
         "latency_ms": latency_ms,
         "total_tokens": total_prompt_tokens + total_completion_tokens,
@@ -402,6 +456,7 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
             yield {"stage": "cache", "status": "hit"}
             append_log({
                 "domain_guess": _guess_topic(technical_query),
+                "issue_guess": _guess_issue_phrase(technical_query),
                 "cache_hit": True,
                 "latency_ms": cached["meta"]["latency_ms"],
                 "total_tokens": 0,
@@ -479,6 +534,7 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
 
         append_log({
             "domain_guess": _guess_topic(technical_query),
+            "issue_guess": _guess_issue_phrase(technical_query),
             "cache_hit": False,
             "latency_ms": latency_ms,
             "total_tokens": total_prompt_tokens + total_completion_tokens,

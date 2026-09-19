@@ -840,8 +840,11 @@ function statTile(label, value, colorClass = 'text-ink') {
 // Single-series horizontal bar chart. One hue throughout (violet, the app's
 // existing "confidence" accent) -- each bar's own row label already
 // identifies it, so a per-bar categorical color would encode nothing real.
-function domainBarChart(domainCounts) {
-  const entries = Object.entries(domainCounts || {}).sort((a, b) => b[1] - a[1]);
+// `labelWidthClass` is adjustable because domain names ("Battery") and
+// trending-issue phrases ("Camera blurry / out of focus", Task 37) need
+// very different label columns; both callers below share this renderer.
+function labeledBarChart(counts, labelWidthClass = 'w-20') {
+  const entries = Object.entries(counts || {}).sort((a, b) => b[1] - a[1]);
   if (entries.length === 0) {
     return `<p class="text-inkdim text-xs font-mono">no requests logged yet</p>`;
   }
@@ -849,14 +852,14 @@ function domainBarChart(domainCounts) {
   const max = Math.max(...entries.map(([, c]) => c));
   const rowH = 26, barMaxW = 100; // percent width of track
 
-  const rows = entries.map(([domain, count], i) => {
+  const rows = entries.map(([label, count], i) => {
     const pct = max > 0 ? (count / max) * barMaxW : 0;
     const share = total > 0 ? Math.round((count / total) * 100) : 0;
     return `
       <div class="flex items-center gap-3" style="height:${rowH}px"
-           onmouseenter="showTooltip(event, '<b>${escapeHtml(domain)}</b><br>${count} request${count === 1 ? '' : 's'} (${share}%)')"
+           onmouseenter="showTooltip(event, '<b>${escapeHtml(label)}</b><br>${count} request${count === 1 ? '' : 's'} (${share}%)')"
            onmousemove="moveTooltip(event)" onmouseleave="hideTooltip()">
-        <div class="w-20 shrink-0 text-inkdim text-[11px] font-mono truncate">${escapeHtml(domain)}</div>
+        <div class="${labelWidthClass} shrink-0 text-inkdim text-[11px] font-mono truncate">${escapeHtml(label)}</div>
         <div class="flex-1 bg-void rounded-full h-[10px] relative overflow-hidden">
           <div class="bg-violet h-full rounded-full transition-all" style="width:${pct}%"></div>
         </div>
@@ -866,6 +869,10 @@ function domainBarChart(domainCounts) {
   }).join('');
 
   return `<div class="space-y-1.5">${rows}</div>`;
+}
+
+function domainBarChart(domainCounts) {
+  return labeledBarChart(domainCounts, 'w-20');
 }
 
 // Two-series stacked bar (helpful vs unhelpful). Color carries real,
@@ -926,6 +933,11 @@ function statsTableView(s) {
             <td class="py-1.5 text-inkdim">Requests — ${escapeHtml(d)}</td>
             <td class="py-1.5 text-ink text-right">${c}</td>
           </tr>`).join('')}
+        ${Object.entries(s.trending_issues || {}).map(([iss, c]) => `
+          <tr class="border-b border-line/60">
+            <td class="py-1.5 text-inkdim">Issue — ${escapeHtml(iss)}</td>
+            <td class="py-1.5 text-ink text-right">${c}</td>
+          </tr>`).join('')}
       </tbody>
     </table>
   `;
@@ -957,6 +969,11 @@ async function loadTelemetry() {
           <p class="font-mono text-[10px] text-inkdim uppercase tracking-wider mb-3">deeplink match feedback (${s.feedback?.deeplinks_with_feedback ?? 0} deeplinks rated)</p>
           ${feedbackBar(s.feedback)}
         </div>
+      </div>
+
+      <div class="bg-void/40 border border-line rounded-xl p-4 mb-2">
+        <p class="font-mono text-[10px] text-inkdim uppercase tracking-wider mb-3">trending issues -- top recurring complaints</p>
+        ${labeledBarChart(s.trending_issues, 'w-36 md:w-52')}
       </div>
 
       <details class="mt-1">
