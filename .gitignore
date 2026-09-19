@@ -4,4 +4,6 @@ __pycache__/
 venv/
 cache_store.json
 request_log.jsonl
+feedback_log.jsonl
+feedback_scores.json
 .DS_Store

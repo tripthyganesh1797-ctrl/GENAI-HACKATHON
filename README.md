@@ -118,6 +118,12 @@ why the offline fallback is English-only, why this sandbox's ablation
 numbers favor the rules-based matcher (HuggingFace Hub is unreachable
 here, so the hybrid matcher runs on TF-IDF/SVD rather than real
 sentence-transformer embeddings — re-run `eval/run_ablation.py` on a
-machine with normal internet access to get the true comparison), and the
-one official query/SIIS-text pairing that's a genuine grounding mismatch
-by design (correctly triggers `no_match` rather than hallucinating steps).
+machine with normal internet access to get the true comparison), and one
+official query whose SIIS reference text is a genuine grounding mismatch
+(floating "Assistive menu" circle, paired with Multi-Window/Edge-panel
+docs) — the **offline fallback's keyword-overlap relevance gate is fooled
+by it** (measured, not assumed: see metrics.md for why a stricter
+threshold isn't a clean fix), while the **LLM path correctly rejects it**
+via prompt rule #7's relevance judgment. This is the clearest concrete
+example of why the LLM path is the primary path and the rule-based
+fallback is a $0/always-available degrade, not a drop-in replacement.

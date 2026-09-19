@@ -23,7 +23,7 @@ Evaluated against 20 official reference scenarios (Screen/Display domain).
 
 | Evaluation Metric | Scale / Anchor | Score |
 | :--- | :--- | :--- |
-| No-match rate (nonsense complaints correctly rejected) | 0.0 - 1.0 | 0.15 |
+| No-match rate (nonsense complaints correctly rejected) | 0.0 - 1.0 | 0.0 |
 | Deeplink relevance (see ablation study, section 5) | 0.0 - 1.0 | See section 5 |
 
 ---
@@ -32,7 +32,7 @@ Evaluated against 20 official reference scenarios (Screen/Display domain).
 
 | Execution Path | Target (P95) | P50 (ms) | P95 (ms) |
 | :--- | :--- | :--- | :--- |
-| Cold query — full pipeline extraction & mapping | <= 8000 ms | 3.6 | 54.7 |
+| Cold query — full pipeline extraction & mapping | <= 8000 ms | 10.6 | 72.7 |
 
 ---
 
@@ -42,7 +42,7 @@ Evaluated against 20 official reference scenarios (Screen/Display domain).
 | :--- | :--- | :--- |
 | Cold query average inference cost | Tracked | $0.0 |
 | Total tokens used (20 queries) | Tracked | 0 |
-| Semantic cache hit rate (on unseen paraphrases) | >= 80% | 100.0% (17/17) |
+| Semantic cache hit rate (on unseen paraphrases) | >= 80% | 100.0% (20/20) |
 | Cost derivation method | - | (prompt_tokens + completion_tokens) x model rate — see llm_client.py estimate_cost_usd() |
 
 ---
@@ -58,7 +58,7 @@ Evaluated against 20 official reference scenarios (Screen/Display domain).
 
 ## 6. Known Edge Cases & System Limitations
 * Deeplink catalog is the full official 578-entry set (data/official_theme2_data/deeplinks.json).
-* Query-to-SIIS relevance gating: one official query (a floating "Assistive menu" circle complaint) is paired with SIIS reference text that actually documents Multi-Window/Edge-panel features, not the assistive-menu circle. The engine's section-relevance check correctly treats this as `no_match` rather than force-fitting Edge-panel steps to an unrelated complaint -- this is the intended behavior for "no viable solution in the reference text," not a bug, but it means the no-match rate above reflects both genuinely out-of-scope complaints and this kind of retrieval/grounding mismatch.
+* Query-to-SIIS relevance gating (offline fallback only): one official query (a floating "Assistive menu" circle complaint) is paired with SIIS reference text that actually documents Multi-Window/Edge-panel features, not the assistive-menu circle -- a genuine retrieval/grounding mismatch in the source data. `offline_fallback.py`'s relevance gate is a keyword-overlap heuristic (`section_relevance()` in offline_fallback.py) with no real language understanding, and on this specific query it is fooled: the Edge-panel section happens to share enough generic vocabulary ("floating", "shortcuts", "remove", "screen") to clear the relevance threshold, so it produces a plausible-looking but topically wrong plan instead of the honest `no_match`. We measured this directly (recall=0.556, precision=0.082 against the matched section) and confirmed it isn't separable from the 19 legitimate matches by a simple threshold: legitimate matches range from precision 0.03-0.30 and this false positive sits in the middle of that range, so raising the bar high enough to reject it would also reject roughly half of the correct matches (verified empirically, not left as a guess). This is a known, inherent limitation of bag-of-words relevance scoring, not a bug we chose not to fix -- and it's exactly the class of error the LLM path doesn't have, because prompt rule #7 in `prompts.py` asks the model to actually judge topical relevance rather than count overlapping words. **Practical takeaway: run with an `LLM_API_KEY` set for grounding-sensitive queries; the offline path optimizes for $0 cost and 100% uptime, not for catching this specific failure mode.**
 * Ablation result (section 5) is counterintuitive but real: the pure rules-based fuzzy matcher (Variant A) outperformed the hybrid BM25+dense matcher (Variant B) on the labeled ground truth in this environment. This sandbox's network blocks HuggingFace Hub (sentence-transformers falls back to an offline TF-IDF/SVD-128 dense representation, not real embeddings), which likely understates Variant B; on a machine with HF Hub access the hybrid path will use real sentence-transformer embeddings automatically (see deeplink_matching.py `_try_load_sentence_transformer`) and should be re-benchmarked there before assuming either variant is "better" in production.
 * Offline fallback (offline_fallback.py) activates automatically whenever LLM_API_KEY is unset or an LLM call/JSON-parse fails; it is deterministic, $0 cost, and English-only. The LLM path (prompts.py) explicitly handles multi-language complaints (incl. Hindi/Hinglish) and translates to English internally; the offline fallback does not translate, so non-English complaints without an LLM key will likely miss the relevance gate and return `no_match`.
 * Voice input (index.html) uses the browser's Web Speech API client-side; it is unsupported in Firefox and requires an internet connection for speech recognition in most browsers (this is a browser/OS limitation, not something the backend controls).

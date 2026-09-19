@@ -93,3 +93,14 @@ class TroubleshootResponse(BaseModel):
     query_variations: List[str] = []
     response: ContextDeeplinkResponse
     meta: Meta
+
+
+class FeedbackRequest(BaseModel):
+    """POST /v1/feedback -- thumbs up/down on one matched deeplink from a
+    previous /v1/troubleshoot(/stream) response. Drives the adaptive
+    re-ranking in deeplink_matching.py (see feedback.py)."""
+    deeplink: str                    # the actionableDeeplink.deeplink string returned earlier
+    action_name: str                 # the actionName it was attached to, for readability in logs
+    helpful: bool
+    query: Optional[str] = None      # original complaint, for traceability
+    comment: Optional[str] = None

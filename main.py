@@ -13,11 +13,12 @@ import json
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from schema import TroubleshootRequest
+from schema import TroubleshootRequest, FeedbackRequest
 
 from pipeline import run_pipeline, run_pipeline_streaming, llm_available
 from request_log import compute_stats
-from deeplink_matching import get_index
+from deeplink_matching import get_index, DUMMY_POSITIVE_DEEPLINK
+import feedback as feedback_module
 
 app = FastAPI(title="Smart Guided Troubleshooting Engine", version="0.1.0")
 
@@ -90,10 +91,34 @@ def troubleshoot_stream(
     )
 
 
+@app.post("/v1/feedback")
+def submit_feedback(request: FeedbackRequest):
+    """Human-in-the-loop signal on a specific deeplink match. Every event is
+    logged (feedback_log.jsonl) and folded into a running per-deeplink
+    aggregate that deeplink_matching.py consults on every future search --
+    so the very next /v1/troubleshoot call for a similar query can already
+    reflect it. See feedback.py for the bounded, explainable adjustment
+    formula (a single click can't flip a match; a consistent pattern can)."""
+    if request.deeplink == DUMMY_POSITIVE_DEEPLINK:
+        raise HTTPException(
+            status_code=400,
+            detail="Feedback on the placeholder deeplink isn't meaningful -- "
+                   "that action had no real catalog match to begin with.",
+        )
+    result = feedback_module.record_feedback(
+        deeplink=request.deeplink,
+        action_name=request.action_name,
+        helpful=request.helpful,
+        query=request.query or "",
+        comment=request.comment or "",
+    )
+    return {"status": "recorded", **result}
+
+
 @app.get("/stats")
 def stats():
     """Live aggregate metrics across every request this server has processed:
     avg/P95 latency, cache hit rate, no-match rate, total tokens/cost, and a
     breakdown of requests by domain. Real numbers for your metrics report,
     computed from actual usage rather than a handful of manual test runs."""
-    return compute_stats()
+    return {**compute_stats(), "feedback": feedback_module.feedback_summary()}

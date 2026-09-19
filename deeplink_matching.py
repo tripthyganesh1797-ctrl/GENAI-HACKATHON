@@ -36,6 +36,8 @@ from pathlib import Path
 from rank_bm25 import BM25Okapi
 from rapidfuzz import fuzz
 
+import feedback
+
 DUMMY_POSITIVE_DEEPLINK = "bixby://dummy_positive"
 
 # --- Optional real embeddings ------------------------------------------
@@ -150,7 +152,12 @@ class HybridDeeplinkIndex:
 
         combined = [self.alpha * b + (1 - self.alpha) * d
                     for b, d in zip(norm_bm25, norm_dense)]
-        ranked = sorted(zip(self.entries, combined), key=lambda x: x[1], reverse=True)
+        # Adaptive re-ranking: nudge scores using accumulated human feedback
+        # (see feedback.py) -- a deeplink that keeps getting thumbs-down for
+        # this kind of query sinks; one that keeps getting thumbs-up rises.
+        adjusted = [max(0.0, c + feedback.get_adjustment(e.deeplink))
+                    for e, c in zip(self.entries, combined)]
+        ranked = sorted(zip(self.entries, adjusted), key=lambda x: x[1], reverse=True)
         return ranked[:top_k]
 
     def best_match(self, text: str, threshold: float = 0.12) -> tuple[DeeplinkEntry | None, float]:
@@ -170,7 +177,7 @@ class RulesDeeplinkIndex:
     def best_match(self, text: str, threshold: float = 45.0) -> tuple[DeeplinkEntry | None, float]:
         best_entry, best_score = None, 0.0
         for e in self.entries:
-            score = fuzz.token_set_ratio(text, e.corpus_text)
+            score = fuzz.token_set_ratio(text, e.corpus_text) + 100 * feedback.get_adjustment(e.deeplink)
             if score > best_score:
                 best_score, best_entry = score, e
         if best_entry is None or best_score < threshold:
@@ -178,7 +185,11 @@ class RulesDeeplinkIndex:
         return best_entry, best_score / 100.0
 
     def search(self, text: str, top_k: int = 3):
-        scored = [(e, fuzz.token_set_ratio(text, e.corpus_text) / 100.0) for e in self.entries]
+        scored = [
+            (e, max(0.0, fuzz.token_set_ratio(text, e.corpus_text) / 100.0
+                    + feedback.get_adjustment(e.deeplink)))
+            for e in self.entries
+        ]
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[:top_k]
 
