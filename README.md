@@ -226,6 +226,36 @@ it just doesn't coordinate across multiple replicas, which a real
 multi-instance deployment would need a shared store (e.g. Redis) for
 instead. See `middleware.py` for all of this.
 
+Every `actionableDeeplink` in a response (real match or the placeholder)
+also carries a `matchExplanation` object — the score breakdown behind
+*why* that specific screen was picked, not just that it was:
+
+```json
+"matchExplanation": {
+  "matcher": "hybrid_bm25_dense",
+  "dense_kind": "tfidf-svd-128 (offline fallback; sentence-transformers unavailable)",
+  "alpha": 0.5,
+  "bm25_component": 1.0,
+  "dense_component": 0.8466,
+  "combined_before_feedback": 0.9233,
+  "feedback_adjustment": 0.0,
+  "final_score": 0.9233,
+  "threshold": 0.12,
+  "matched_keywords": ["data", "fi", "mobile", "stable", "wi"]
+}
+```
+
+The rules-variant matcher (`RulesDeeplinkIndex`) reports the analogous
+`fuzzy_score` / `feedback_adjustment_pts` / `final_score_pts` shape
+instead. This is genuine introspection into the actual ranking that ran
+— not a post-hoc guess — so it's exactly as trustworthy as the match
+itself, and it's the same code path `deeplink_matching.best_match()`
+uses internally (`best_match_explained()` is a superset, verified in
+`tests/test_deeplink_matching.py::TestMatchExplainability` to never
+disagree with `best_match()` on which entry wins). `index.html` renders
+it as a collapsed "why this match?" disclosure under each resolved
+deeplink, with the overlapping keywords as chips.
+
 ## Submission checklist (per Hackathon_Guidelines.pdf)
 
 - [x] Working prototype code, real official data wired in

@@ -525,9 +525,9 @@ def _group_steps(steps_with_ctx: list[tuple[str, str]]) -> list[dict]:
 
         if category == "manual" and not _looks_like_ui_action(step):
             group_key = "manual:no-deeplink"
-            entry = None
+            entry, explanation = None, None
         else:
-            entry, _score = index.best_match(step)
+            entry, _score, explanation = index.best_match_explained(step)
             group_key = entry.id if entry is not None else f"dummy:{step[:24].lower()}"
 
         if group_key not in groups:
@@ -541,6 +541,7 @@ def _group_steps(steps_with_ctx: list[tuple[str, str]]) -> list[dict]:
                 "steps": [],
                 "category": category,
                 "entry": entry,
+                "explanation": explanation,
                 "action_name": (dm_title_case(entry.message) if (entry and entry.message) else fallback_name),
             }
         else:
@@ -562,6 +563,7 @@ def _group_steps(steps_with_ctx: list[tuple[str, str]]) -> list[dict]:
                 "description": entry.description,
                 "message": entry.message,
                 "originalType": entry.original_type,
+                "matchExplanation": g["explanation"],
             }
             validation = None
             if entry.validation:
@@ -580,6 +582,7 @@ def _group_steps(steps_with_ctx: list[tuple[str, str]]) -> list[dict]:
                 "description": f"Opens the {g['action_name'].lower()} settings screen on the device.",
                 "message": f"Open {g['action_name']}",
                 "originalType": "placeholder",
+                "matchExplanation": g["explanation"],
             }
             validation = None
             description = make_description(g["action_name"])

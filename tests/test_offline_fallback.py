@@ -125,3 +125,20 @@ class TestOfflineExtractEndToEnd:
                 if "critical" in cats:
                     first = cats.index("critical")
                     assert all(c == "critical" for c in cats[first:])
+
+    def test_resolved_deeplinks_carry_a_match_explanation(self, real_samples):
+        """Task 29: the offline path builds its own actionableDeeplink dicts
+        (separately from deeplink_matching.match_and_build_deeplink), so it
+        needs its own check that matchExplanation made it through here too."""
+        found_any = False
+        for sample in real_samples:
+            result = of.offline_extract(sample["complaint"], sample.get("siis_response", ""))
+            for goal in result["contexts"]:
+                for action in goal["actions"]:
+                    for sg in action["stepGroups"]:
+                        dl = sg.get("actionableDeeplink")
+                        if dl is not None:
+                            found_any = True
+                            assert "matchExplanation" in dl
+                            assert dl["matchExplanation"]["matcher"] in ("hybrid_bm25_dense", "rules_fuzzy")
+        assert found_any, "expected at least one resolved deeplink across the real sample set"

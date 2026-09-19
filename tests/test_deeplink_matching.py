@@ -45,6 +45,89 @@ def test_match_and_build_deeplink_shape():
     assert actionable2["deeplink"] in (dm.DUMMY_POSITIVE_DEEPLINK,) or actionable2["deeplink"]
 
 
+class TestMatchExplainability:
+    """Task 29: every actionableDeeplink (real match or placeholder) should
+    carry a matchExplanation dict a judge/dev can use to see *why* -- score
+    components, the feedback nudge applied, and overlapping keywords."""
+
+    def test_hybrid_explanation_has_score_breakdown(self):
+        index = dm.get_index("hybrid")
+        entry, score, explanation = index.best_match_explained("wifi settings screen")
+        assert entry is not None
+        assert explanation["matcher"] == "hybrid_bm25_dense"
+        for key in ("bm25_component", "dense_component", "combined_before_feedback",
+                    "feedback_adjustment", "final_score", "threshold", "matched_keywords"):
+            assert key in explanation
+        assert explanation["final_score"] == round(score, 4)
+        # the components should actually blend into the final score (loose
+        # tolerance since bm25_component/dense_component are independently
+        # rounded to 4dp before this recomputation, which can compound)
+        expected = (explanation["alpha"] * explanation["bm25_component"]
+                    + (1 - explanation["alpha"]) * explanation["dense_component"])
+        assert abs(explanation["combined_before_feedback"] - expected) < 1e-3
+
+    def test_hybrid_explanation_on_rejection_still_returned(self):
+        index = dm.get_index("hybrid")
+        entry, score, explanation = index.best_match_explained("zzzzz qqqqq xxxxx gibberish nonword")
+        assert entry is None
+        assert explanation["rejected_reason"] == "final_score below threshold"
+
+    def test_hybrid_best_match_and_best_match_explained_agree(self):
+        """The two entry points must never disagree on the winning entry --
+        best_match() is still used by offline_fallback.py's older call
+        sites and eval/matchers.py, so a silent divergence here would mean
+        the API's explained response describes a different match than the
+        one actually used elsewhere."""
+        index = dm.get_index("hybrid")
+        for query in ("wifi settings screen", "battery drains fast", "camera blurry photos"):
+            plain_entry, plain_score = index.best_match(query)
+            exp_entry, exp_score, _ = index.best_match_explained(query)
+            assert plain_entry == exp_entry
+            assert abs(plain_score - exp_score) < 1e-9
+
+    def test_rules_explanation_has_score_breakdown(self):
+        entries = dm.load_deeplinks("deeplinks.json")
+        index = dm.RulesDeeplinkIndex(entries)
+        entry, score, explanation = index.best_match_explained("wifi settings screen")
+        assert entry is not None
+        assert explanation["matcher"] == "rules_fuzzy"
+        for key in ("fuzzy_score", "feedback_adjustment_pts", "final_score_pts",
+                    "threshold_pts", "matched_keywords"):
+            assert key in explanation
+
+    def test_rules_best_match_and_best_match_explained_agree(self):
+        entries = dm.load_deeplinks("deeplinks.json")
+        index = dm.RulesDeeplinkIndex(entries)
+        for query in ("wifi settings screen", "battery drains fast"):
+            plain_entry, plain_score = index.best_match(query)
+            exp_entry, exp_score, _ = index.best_match_explained(query)
+            assert plain_entry == exp_entry
+            assert abs(plain_score - exp_score) < 1e-9
+
+    def test_match_and_build_deeplink_includes_explanation_for_real_match(self):
+        actionable, _ = dm.match_and_build_deeplink(
+            "Wifi Settings", ["Tap Wifi.", "Toggle Wifi on."], variant="hybrid",
+        )
+        assert "matchExplanation" in actionable
+        assert actionable["matchExplanation"]["matcher"] == "hybrid_bm25_dense"
+
+    def test_match_and_build_deeplink_includes_explanation_for_placeholder(self):
+        actionable, _ = dm.match_and_build_deeplink(
+            "Completely Made Up Nonexistent Screen Xyzzy", ["Do the thing."], variant="rules",
+        )
+        assert "matchExplanation" in actionable
+        assert actionable["matchExplanation"]["matcher"] == "rules_fuzzy"
+        assert "rejected_reason" in actionable["matchExplanation"]
+
+    def test_matched_keywords_are_real_overlap(self):
+        index = dm.get_index("hybrid")
+        entry, _, explanation = index.best_match_explained("wifi settings screen toggle")
+        assert entry is not None
+        corpus_tokens = set(dm._tokenize(entry.corpus_text))
+        for kw in explanation["matched_keywords"]:
+            assert kw in corpus_tokens
+
+
 def test_never_matches_the_dummy_positive_entry_itself():
     """DUMMY_POSITIVE_DEEPLINK is a sentinel in the source data, not a real
     screen -- it must be filtered out of the index entirely."""

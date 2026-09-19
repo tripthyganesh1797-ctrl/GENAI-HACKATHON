@@ -67,6 +67,24 @@ def _tokenize(text: str) -> list[str]:
     return re.findall(r"[a-z0-9]+", text.lower())
 
 
+_STOPWORDS = {
+    "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "is",
+    "it", "your", "you", "this", "that", "with", "screen", "device",
+}
+
+
+def _matched_keywords(text: str, entry: "DeeplinkEntry", limit: int = 5) -> list[str]:
+    """Token overlap between the query and the entry's own matchable text --
+    surfaced to the caller so a judge (or a developer debugging a bad match)
+    can see *why* a deeplink was picked, not just that it was. Deliberately
+    crude (set intersection, common stopwords dropped) to match the
+    crudeness of the fuzzy/BM25 scorers themselves -- this is meant to
+    explain the actual matching logic, not to be a better matcher itself."""
+    q_toks = set(_tokenize(text)) - _STOPWORDS
+    e_toks = set(_tokenize(entry.corpus_text)) - _STOPWORDS
+    return sorted(q_toks & e_toks)[:limit]
+
+
 @dataclass
 class DeeplinkEntry:
     id: str
@@ -136,11 +154,12 @@ class HybridDeeplinkIndex:
             return self.embedder.encode([text], normalize_embeddings=True)
         return self.svd.transform(self.tfidf.transform([text]))
 
-    def search(self, text: str, top_k: int = 3) -> list[tuple[DeeplinkEntry, float]]:
+    def _component_scores(self, text: str) -> tuple[list[float], list[float]]:
+        """Returns (norm_bm25, norm_dense), aligned with self.entries. Split
+        out from search() so best_match_explained() can report the two raw
+        components separately instead of only their blend."""
         from sklearn.metrics.pairwise import cosine_similarity
 
-        if not self.entries:
-            return []
         toks = _tokenize(text)
         bm25_scores = self.bm25.get_scores(toks) if toks else [0.0] * len(self.entries)
         max_bm25 = max(bm25_scores) if len(bm25_scores) and max(bm25_scores) > 0 else 1.0
@@ -149,7 +168,12 @@ class HybridDeeplinkIndex:
         dense_vec = self._dense_query_vec(text)
         dense_scores = cosine_similarity(dense_vec, self.dense_matrix)[0]
         norm_dense = [max(0.0, s) for s in dense_scores]
+        return norm_bm25, norm_dense
 
+    def search(self, text: str, top_k: int = 3) -> list[tuple[DeeplinkEntry, float]]:
+        if not self.entries:
+            return []
+        norm_bm25, norm_dense = self._component_scores(text)
         combined = [self.alpha * b + (1 - self.alpha) * d
                     for b, d in zip(norm_bm25, norm_dense)]
         # Adaptive re-ranking: nudge scores using accumulated human feedback
@@ -166,6 +190,45 @@ class HybridDeeplinkIndex:
             return None, 0.0
         entry, score = results[0]
         return (entry, score) if score >= threshold else (None, score)
+
+    def best_match_explained(
+        self, text: str, threshold: float = 0.12
+    ) -> tuple[DeeplinkEntry | None, float, dict]:
+        """Same ranking as best_match(), but also returns a JSON-safe
+        breakdown of *why* the top entry scored the way it did -- the raw
+        BM25 and dense components before blending, the feedback nudge
+        applied on top, and the overlapping keywords a person can sanity-check
+        by eye. Used by match_and_build_deeplink() to surface this in the API
+        response; best_match() itself is left untouched so existing callers
+        (offline_fallback.py, eval/matchers.py) are unaffected."""
+        if not self.entries:
+            return None, 0.0, {"matcher": "hybrid_bm25_dense", "reason": "empty_index"}
+
+        norm_bm25, norm_dense = self._component_scores(text)
+        combined = [self.alpha * b + (1 - self.alpha) * d
+                    for b, d in zip(norm_bm25, norm_dense)]
+        fb_adj = [feedback.get_adjustment(e.deeplink) for e in self.entries]
+        adjusted = [max(0.0, c + a) for c, a in zip(combined, fb_adj)]
+
+        best_i = max(range(len(adjusted)), key=lambda i: adjusted[i])
+        entry, score = self.entries[best_i], adjusted[best_i]
+
+        explanation = {
+            "matcher": "hybrid_bm25_dense",
+            "dense_kind": self.dense_kind,
+            "alpha": self.alpha,
+            "bm25_component": round(norm_bm25[best_i], 4),
+            "dense_component": round(norm_dense[best_i], 4),
+            "combined_before_feedback": round(combined[best_i], 4),
+            "feedback_adjustment": round(fb_adj[best_i], 4),
+            "final_score": round(score, 4),
+            "threshold": threshold,
+            "matched_keywords": _matched_keywords(text, entry),
+        }
+        if score < threshold:
+            explanation["rejected_reason"] = "final_score below threshold"
+            return None, score, explanation
+        return entry, score, explanation
 
 
 class RulesDeeplinkIndex:
@@ -192,6 +255,40 @@ class RulesDeeplinkIndex:
         ]
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[:top_k]
+
+    def best_match_explained(
+        self, text: str, threshold: float = 45.0
+    ) -> tuple[DeeplinkEntry | None, float, dict]:
+        """Rules-variant counterpart to HybridDeeplinkIndex.best_match_explained()
+        -- same idea (return the winning entry's score components), but for
+        the single fuzzy-ratio score this matcher uses instead of a
+        BM25+dense blend."""
+        best_entry, best_fuzzy, best_fb, best_score = None, 0.0, 0.0, 0.0
+        for e in self.entries:
+            fuzzy = fuzz.token_set_ratio(text, e.corpus_text)
+            fb_pts = 100 * feedback.get_adjustment(e.deeplink)
+            score = fuzzy + fb_pts
+            # Same "strictly greater" comparison as best_match() above, so
+            # the two methods never disagree on which entry wins.
+            if score > best_score:
+                best_score, best_entry, best_fuzzy, best_fb = score, e, fuzzy, fb_pts
+
+        if best_entry is None:
+            reason = "empty_index" if not self.entries else "no_entry_scored_above_zero"
+            return None, 0.0, {"matcher": "rules_fuzzy", "reason": reason}
+
+        explanation = {
+            "matcher": "rules_fuzzy",
+            "fuzzy_score": round(best_fuzzy, 2),
+            "feedback_adjustment_pts": round(best_fb, 2),
+            "final_score_pts": round(best_score, 2),
+            "threshold_pts": threshold,
+            "matched_keywords": _matched_keywords(text, best_entry),
+        }
+        if best_score < threshold:
+            explanation["rejected_reason"] = "final_score below threshold"
+            return None, best_score / 100.0, explanation
+        return best_entry, best_score / 100.0, explanation
 
 
 _INDEX_CACHE: dict[str, HybridDeeplinkIndex | RulesDeeplinkIndex] = {}
@@ -229,7 +326,7 @@ def match_and_build_deeplink(action_name: str, steps: list[str],
     validationDeeplink dict | None)."""
     index = get_index(variant, path)
     query_text = action_name + " " + " ".join(steps)
-    entry, score = index.best_match(query_text)
+    entry, score, explanation = index.best_match_explained(query_text)
 
     if entry is not None:
         actionable = {
@@ -237,6 +334,7 @@ def match_and_build_deeplink(action_name: str, steps: list[str],
             "description": entry.description,
             "message": entry.message,
             "originalType": entry.original_type,
+            "matchExplanation": explanation,
         }
         validation = None
         if entry.validation:
@@ -255,4 +353,5 @@ def match_and_build_deeplink(action_name: str, steps: list[str],
         "description": f"Opens the {action_name.lower()} settings screen on the device.",
         "message": f"Open {to_title_case(action_name)}",
         "originalType": "placeholder",
+        "matchExplanation": explanation,
     }, None
