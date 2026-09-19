@@ -455,6 +455,10 @@ async function runDiagnosis() {
   const query = complaintInput.value.trim();
   if (!query) return;
 
+  // A stale read-aloud from the previous result must never keep playing
+  // over a fresh diagnosis -- see stopReadAloud() (Task 39).
+  if (typeof TTS_SUPPORTED !== 'undefined' && TTS_SUPPORTED) stopReadAloud();
+
   diagnoseBtn.disabled = true;
   diagnoseBtn.classList.add('opacity-50');
 
@@ -780,9 +784,108 @@ function shareReportBar() {
         class="text-xs font-mono px-3 py-1.5 rounded-lg border border-line text-inkdim hover:text-violet hover:border-violet transition-colors">
         ⬇ download report (html)
       </button>
+      ${ttsControlsHtml()}
       <span id="reportStatus" class="text-[10px] font-mono text-inkdim"></span>
     </div>
   `;
+}
+
+// Task 39: read the current troubleshooting plan aloud via the browser's
+// built-in Web Speech API (SpeechSynthesis) -- entirely client-side, no
+// backend involvement, no audio file to generate or ship. Feature-detected
+// once at load: on a browser without support the controls simply aren't
+// rendered, rather than showing a button that silently does nothing.
+const TTS_SUPPORTED = typeof window !== 'undefined' && 'speechSynthesis' in window;
+let ttsState = 'idle'; // 'idle' | 'speaking' | 'paused'
+
+function ttsControlsHtml() {
+  if (!TTS_SUPPORTED) return '';
+  return `
+    <button id="ttsToggleBtn" onclick="toggleReadAloud()"
+      class="text-xs font-mono px-3 py-1.5 rounded-lg border border-line text-inkdim hover:text-amber hover:border-amber transition-colors">
+      🔊 read steps aloud
+    </button>
+    <button id="ttsStopBtn" onclick="stopReadAloud()"
+      class="hidden text-xs font-mono px-3 py-1.5 rounded-lg border border-line text-inkdim hover:text-red hover:border-red transition-colors">
+      ⏹ stop
+    </button>
+  `;
+}
+
+// One goal's title/confidence, each action's name + description + steps,
+// and an escalation caveat if present -- deeplinks/category tags are
+// skipped since a raw URI or "[auto]" tag reads as noise out loud.
+function buildSpeechSegments(contexts) {
+  const segments = [];
+  (contexts || []).forEach((goal, gi) => {
+    const confidencePct = Math.round((goal.score || 0) * 100);
+    const prefix = contexts.length > 1 ? `Issue ${gi + 1}: ` : '';
+    segments.push(`${prefix}${goal.title || 'Diagnosis'}. ${confidencePct} percent confidence.`);
+    (goal.actions || []).forEach((action, ai) => {
+      segments.push(`Step ${ai + 1}: ${action.actionName || ''}.`);
+      const steps = (action.stepGroups || []).flatMap(sg => sg.steps || []);
+      steps.forEach(s => segments.push(s));
+    });
+    if (goal.escalation && goal.escalation.recommended) {
+      segments.push(`If these steps do not resolve it: ${goal.escalation.reason || ''}`);
+    }
+  });
+  return segments;
+}
+
+function readAloud() {
+  if (!TTS_SUPPORTED || !lastResult) return;
+  const contexts = lastResult.response?.contexts || [];
+  const segments = buildSpeechSegments(contexts);
+  if (segments.length === 0) return;
+
+  window.speechSynthesis.cancel();
+  segments.forEach((text, i) => {
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.rate = 1.0;
+    if (i === 0) {
+      utter.onstart = () => { ttsState = 'speaking'; updateTtsButton(); };
+    }
+    if (i === segments.length - 1) {
+      utter.onend = () => { ttsState = 'idle'; updateTtsButton(); };
+    }
+    window.speechSynthesis.speak(utter);
+  });
+}
+
+function toggleReadAloud() {
+  if (!TTS_SUPPORTED) return;
+  if (ttsState === 'speaking') {
+    window.speechSynthesis.pause();
+    ttsState = 'paused';
+  } else if (ttsState === 'paused') {
+    window.speechSynthesis.resume();
+    ttsState = 'speaking';
+  } else {
+    readAloud();
+  }
+  updateTtsButton();
+}
+
+function stopReadAloud() {
+  if (!TTS_SUPPORTED) return;
+  window.speechSynthesis.cancel();
+  ttsState = 'idle';
+  updateTtsButton();
+}
+
+function updateTtsButton() {
+  const toggleBtn = document.getElementById('ttsToggleBtn');
+  const stopBtn = document.getElementById('ttsStopBtn');
+  if (!toggleBtn) return;
+  if (ttsState === 'speaking') {
+    toggleBtn.textContent = '⏸ pause reading';
+  } else if (ttsState === 'paused') {
+    toggleBtn.textContent = '▶ resume reading';
+  } else {
+    toggleBtn.textContent = '🔊 read steps aloud';
+  }
+  if (stopBtn) stopBtn.classList.toggle('hidden', ttsState === 'idle');
 }
 
 async function fetchReport(format) {
