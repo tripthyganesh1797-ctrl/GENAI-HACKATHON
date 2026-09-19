@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pipeline import run_pipeline, llm_available
 from llm_client import MODEL
+from cache import CACHE_FILE
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 PARENT_DIR = os.path.dirname(THIS_DIR)
@@ -51,7 +52,17 @@ def run_cold_pass():
     reference text for each query, exactly as the live API contract
     expects (siis_response is what the extractor must ground its steps
     in -- without it there's nothing to derive a plan from beyond a cache
-    hit)."""
+    hit).
+
+    Clears the on-disk cache first so this is ALWAYS a genuine cold
+    measurement, regardless of what ran earlier in this checkout (e.g.
+    eval/generate_results_jsonl.py runs these same 20 queries and leaves
+    the cache warm -- without this clear, running that script first would
+    silently turn every "cold" result here into a cache hit and report a
+    meaningless 0ms latency instead of a real measurement)."""
+    if os.path.exists(CACHE_FILE):
+        os.remove(CACHE_FILE)
+
     results = []
     for case in QUERY_SET:
         result = run_pipeline(case["complaint"], case.get("siis_response", ""))

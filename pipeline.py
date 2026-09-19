@@ -30,6 +30,7 @@ from deeplink_matching import match_and_build_deeplink
 from escalation import build_escalation_recommendation, LLM_SCORE_ESCALATION_THRESHOLD
 from device_signals import apply_device_context
 from session_memory import get_avoid_set
+from safety import detect_physical_hazard, build_safety_goal
 import offline_fallback
 
 _PLACEHOLDER_KEYS = {None, "", "your_key_here"}
@@ -277,12 +278,75 @@ def _summarize_session_avoidance(contexts: list) -> list[str]:
 # Full pipeline
 # ---------------------------------------------------------------------------
 
+def _build_safety_response(raw_complaint: str, hazard_reason: str, start: float) -> dict:
+    """A physical-hazard complaint (safety.py) short-circuits everything
+    else -- no LLM/offline extraction attempt, no cache read/write, no
+    device-context reordering. See safety.py's module docstring for why
+    this has to be a hard override rather than an extra caveat on a
+    normal plan."""
+    contexts = [build_safety_goal(hazard_reason)]
+    # Same validation every other Goal in this pipeline goes through
+    # before shipping -- belt-and-suspenders, not because this
+    # hand-built goal is expected to fail it (it's covered by
+    # tests/test_safety.py), but because nothing in this codebase skips
+    # the compliance check just because a human wrote the source dict
+    # instead of the LLM/offline extractor.
+    validation_errors = validate_goal_object(contexts[0])
+    latency_ms = round((time.time() - start) * 1000, 1)
+
+    append_log({
+        "domain_guess": "Safety",
+        "issue_guess": f"Physical hazard: {hazard_reason}",
+        "cache_hit": False,
+        "latency_ms": latency_ms,
+        "total_tokens": 0,
+        "cost_usd": 0.0,
+        "fallback": None,
+        "used_offline_fallback": False,
+    })
+
+    return {
+        "query": raw_complaint,
+        # Deterministic, zero-cost, zero-LLM paraphrase generator (same one
+        # the offline path uses) -- keeps this response schema/contract
+        # compliant (8-10 query_variations) even on the safety short-circuit.
+        "query_variations": offline_fallback.generate_paraphrases(raw_complaint),
+        "response": {"contexts": contexts},
+        "meta": {
+            "latency_ms": latency_ms,
+            "cache_hit": False,
+            "model": "safety-rule-based",
+            "cost_usd": 0.0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "fallback": None,
+            "used_offline_fallback": False,
+            "used_builtin_reference": False,
+            "detected_language": "en",
+            "validation_errors": validation_errors,
+            "device_context_notes": [],
+            "session_notes": [],
+            "safety_alert": True,
+            "safety_reason": hazard_reason,
+        },
+    }
+
+
 def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[dict] = None,
                   session_id: Optional[str] = None) -> dict:
     start = time.time()
     total_prompt_tokens = 0
     total_completion_tokens = 0
     used_fallback_any = False
+
+    # Physical-hazard short-circuit (safety.py) -- runs before ANYTHING
+    # else, including the cache lookup, so it can never be skipped by a
+    # stale cache entry and never pollutes the cache for this query's
+    # normal technical_query key. See _build_safety_response()/safety.py.
+    hazard_reason = detect_physical_hazard(raw_complaint)
+    if hazard_reason:
+        return _build_safety_response(raw_complaint, hazard_reason, start)
 
     # Task 36: which deeplinks (if any) THIS session already tried and
     # marked unhelpful. Empty for no session_id / a session with no
@@ -375,6 +439,8 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
             "used_builtin_reference": extraction.get("used_builtin_reference", False),
             "detected_language": enrichment.get("detected_language", "en" if used_fallback_any else None),
             "validation_errors": all_errors,
+            "safety_alert": False,
+            "safety_reason": None,
         },
     }
 
@@ -424,6 +490,16 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
 
     try:
         yield {"stage": "start", "status": "done", "data": {"query": raw_complaint}}
+
+        # Physical-hazard short-circuit -- see run_pipeline()'s identical
+        # check and _build_safety_response()/safety.py for why this comes
+        # before anything else, streaming included.
+        hazard_reason = detect_physical_hazard(raw_complaint)
+        if hazard_reason:
+            safety_response = _build_safety_response(raw_complaint, hazard_reason, start)
+            yield {"stage": "safety_alert", "status": "done", "data": {"reason": hazard_reason}}
+            yield {"stage": "complete", "status": "done", "data": safety_response}
+            return
 
         # Stage 0
         yield {"stage": "enrich", "status": "running"}
@@ -525,6 +601,8 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
                 "used_builtin_reference": extraction.get("used_builtin_reference", False),
                 "detected_language": enrichment.get("detected_language", "en" if used_fallback_any else None),
                 "validation_errors": all_errors,
+                "safety_alert": False,
+                "safety_reason": None,
             },
         }
 

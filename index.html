@@ -391,11 +391,14 @@ function renderBatchResults(data, items) {
     const noMatch = contexts.length === 0;
     const actionCount = contexts.reduce((n, c) => n + (c.actions?.length || 0), 0);
     const latency = r.result?.meta?.latency_ms;
+    const safetyAlert = r.result?.meta?.safety_alert;
+    const safetyReason = r.result?.meta?.safety_reason;
     return `
-      <div class="border border-line bg-void rounded-lg px-3 py-2.5">
+      <div class="border ${safetyAlert ? 'border-red/50 bg-red/10' : 'border-line bg-void'} rounded-lg px-3 py-2.5">
         <p class="text-ink text-xs font-mono mb-1">${query}</p>
-        <p class="${noMatch ? 'text-amber' : 'text-cyan'} text-xs font-mono">
-          ${noMatch ? '— no match in diagnostic catalog' : `✓ ${contexts.length} goal(s), ${actionCount} action(s)`}
+        <p class="${safetyAlert ? 'text-red' : (noMatch ? 'text-amber' : 'text-cyan')} text-xs font-mono">
+          ${safetyAlert ? `&#9888; critical safety flag — ${escapeHtml(safetyReason || '')}` :
+            (noMatch ? '— no match in diagnostic catalog' : `✓ ${contexts.length} goal(s), ${actionCount} action(s)`)}
           ${latency != null ? `<span class="text-inkdim">· ${latency}ms</span>` : ''}
         </p>
       </div>`;
@@ -490,7 +493,8 @@ async function runDiagnosis() {
     lastResult = data;
     updateMetrics(data.meta || {});
     renderContexts(data.response?.contexts || [], query, data.meta?.device_context_notes || [],
-                   data.meta?.session_notes || []);
+                   data.meta?.session_notes || [], data.meta?.safety_alert || false,
+                   data.meta?.safety_reason || null);
 
   } catch (err) {
     setApiOnline(false);
@@ -710,8 +714,24 @@ function sessionNotesBanner(notes) {
   `;
 }
 
-function renderContexts(contexts, query, deviceContextNotes = [], sessionNotes = []) {
-  const notesHtml = deviceContextNotesBanner(deviceContextNotes) + sessionNotesBanner(sessionNotes);
+// safety.py's physical-hazard short-circuit (swollen/smoking/sparking
+// battery, etc.) -- this is not a confidence caveat like escalationBanner()
+// below, it's a hard "stop and contact Samsung Support" instruction, so it
+// gets its own unmistakably red banner ABOVE everything else, including
+// the device/session-history notes.
+function safetyBanner(safetyAlert, safetyReason) {
+  if (!safetyAlert) return '';
+  return `
+    <div class="mb-5 bg-red/10 border-2 border-red/60 rounded-xl px-4 py-3.5 fade-up">
+      <p class="text-red font-display font-semibold text-xs mb-2">&#9888; CRITICAL SAFETY FLAG${safetyReason ? ` — ${escapeHtml(safetyReason)}` : ''}</p>
+      <p class="text-ink/90 text-xs">Stop using and stop charging the device immediately. Move it away from flammable material and contact Samsung Support or an authorized service center in person — do not attempt software troubleshooting steps for this.</p>
+    </div>
+  `;
+}
+
+function renderContexts(contexts, query, deviceContextNotes = [], sessionNotes = [], safetyAlert = false, safetyReason = null) {
+  const notesHtml = safetyBanner(safetyAlert, safetyReason) +
+                     deviceContextNotesBanner(deviceContextNotes) + sessionNotesBanner(sessionNotes);
   if (!contexts || contexts.length === 0) {
     resultContainer.innerHTML = `
       ${notesHtml}
