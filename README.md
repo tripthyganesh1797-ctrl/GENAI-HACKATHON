@@ -19,6 +19,71 @@ switch — whenever `LLM_API_KEY` isn't set, or an LLM call/JSON-parse fails
 after retries. `meta.used_offline_fallback` in every response says which
 path actually ran.
 
+**Contents:** [Architecture](#architecture) · [Setup](#setup) · [Run the pipeline directly](#run-the-pipeline-directly-no-server-needed-fastest-way-to-test) · [Run the API server](#run-the-api-server) · [Run the tests](#run-the-tests) · [Run with Docker](#run-with-docker) · [Try the demo UI](#try-the-demo-ui) · [Project structure](#project-structure) · [Submission checklist](#submission-checklist-per-hackathon_guidelinespdf) · [Known limitations](#known-limitations)
+
+## Architecture
+
+Every request flows through the same four stages regardless of which
+execution path runs Stage 0/1 — Stage 2 (deeplink matching) and every
+validator run identically either way, so the LLM path and the offline
+fallback can never disagree about the data *contract*, only about how
+good the extracted troubleshooting content is.
+
+```mermaid
+flowchart TD
+    U["User complaint\n(text, voice, or any language)"] --> API
+
+    subgraph API["FastAPI (main.py)"]
+        direction TB
+        EP1["POST /v1/troubleshoot"]
+        EP2["GET /v1/troubleshoot/stream (SSE)"]
+        EP3["POST /v1/feedback"]
+        EP4["GET /stats · /health"]
+    end
+
+    EP1 --> S0
+    EP2 --> S0
+
+    S0{"Stage 0: enrich\nLLM_API_KEY set?"}
+    S0 -- "yes, LLM reachable" --> L0["LLM: normalise + translate\n+ 8-10 paraphrases\n(prompts.py / llm_client.py)"]
+    S0 -- "no key, or call/JSON-parse fails" --> O0["offline_fallback.py\nrule-based enrich, $0, English-only"]
+
+    L0 --> CACHE
+    O0 --> CACHE
+    CACHE{"Semantic cache hit?\n(cache.py, Jaccard overlap)"}
+    CACHE -- "yes" --> RESP
+    CACHE -- "no" --> S1
+
+    S1{"Stage 1: extract"}
+    S1 -- "LLM" --> L1["LLM: Goal/Action/StepGroup JSON\n+ multi-issue splitting"]
+    S1 -- "offline" --> O1["offline_fallback.py\nparse SIIS text, group steps,\nsplit multi-issue complaints"]
+
+    L1 --> VAL
+    O1 --> VAL
+    VAL["validators.py\nword counts · goal syntax · URL scrub\ncritical-safety override · re-sort"]
+
+    VAL --> S2
+    S2["Stage 2: deeplink matching\n(deeplink_matching.py — always code, never the LLM)"]
+    S2 --> HYB["HybridDeeplinkIndex\nBM25 + dense (sentence-transformers\nor offline TF-IDF/SVD)"]
+    S2 --> RUL["RulesDeeplinkIndex\nfuzzy keyword match (rapidfuzz)"]
+    HYB & RUL --> FB[("feedback.py\nper-deeplink score adjustment")]
+
+    HYB --> RESP
+    RUL --> RESP
+    RESP["Validated response\n(contexts + meta)"] --> LOG[("request_log.jsonl\n→ /stats")]
+
+    EP3 --> FBWRITE["feedback.record_feedback()"] --> FB
+```
+
+**Why this shape:** Stage 2 and the validators are shared, not
+duplicated, between the two Stage-0/1 paths — the ablation study and the
+"no-hallucination" guarantee describe the code that actually ships, not a
+separate demo-only code path. The feedback loop closes over the deeplink
+matchers specifically (not the LLM/offline choice), because that's the
+stage a human can meaningfully correct without needing to re-prompt an
+LLM: "this deeplink was wrong" is a fact about the catalog match, not
+about how the complaint was understood.
+
 ## Setup
 
 ```bash
