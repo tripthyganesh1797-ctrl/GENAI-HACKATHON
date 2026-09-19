@@ -32,7 +32,7 @@ Evaluated against 20 official reference scenarios (Screen/Display domain).
 
 | Execution Path | Target (P95) | P50 (ms) | P95 (ms) |
 | :--- | :--- | :--- | :--- |
-| Cold query — full pipeline extraction & mapping | <= 8000 ms | 10.6 | 72.7 |
+| Cold query — full pipeline extraction & mapping | <= 8000 ms | 10.3 | 72.8 |
 
 ---
 
@@ -51,8 +51,8 @@ Evaluated against 20 official reference scenarios (Screen/Display domain).
 
 | Architecture Variant | Step Accuracy | Latency (P95) | Cost / Query | Key Observations |
 | :--- | :--- | :--- | :--- | :--- |
-| Variant B: Hybrid BM25 + Dense | 50.0% | 3.04ms | $0.0 | 10/20 correct |
-| Variant A: Pure Rules-Based | 70.0% | 6.77ms | $0.0 | 14/20 correct |
+| Variant B: Hybrid BM25 + Dense | 50.0% | 10.04ms | $0.0 | 10/20 correct |
+| Variant A: Pure Rules-Based | 70.0% | 4.23ms | $0.0 | 14/20 correct |
 
 ---
 
