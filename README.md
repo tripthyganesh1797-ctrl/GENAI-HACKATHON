@@ -159,6 +159,27 @@ parity check between the streaming and non-streaming pipelines
 `cache_store.json` / `request_log.jsonl` / `feedback_*` files (see
 `tests/conftest.py`).
 
+## Terminal CLI
+
+No browser, no server, no LLM key needed -- `cli.py` calls `pipeline.py`
+directly and prints formatted results (drop `--api-base` to run against a
+live server instead, which exercises the real HTTP contract: rate
+limiting, request IDs, structured errors):
+
+```bash
+python cli.py query "battery drains fast and camera lags on open"
+python cli.py query "screen flickers" --siis-file samples/screen.txt --verbose   # --verbose shows the matchExplanation breakdown
+python cli.py stream "screen flickers and touch is laggy"                       # live stage-by-stage, same events the SSE endpoint emits
+python cli.py batch sample_queries_real.json --out results.json                 # runs all 20 official queries, writes full results
+python cli.py --api-base http://localhost:8000 batch queries.json               # same, but against a live server (uses POST /v1/troubleshoot/batch)
+python cli.py --api-base http://localhost:8000 health
+python cli.py --api-base http://localhost:8000 stats
+```
+
+Zero third-party dependencies for the `--api-base` HTTP calls (stdlib
+`urllib`, not `requests`/`httpx`) -- the CLI works even in a minimal
+install that skips the "dev / test only" section of `requirements.txt`.
+
 ## Run with Docker
 
 ```bash
@@ -207,7 +228,8 @@ and a screen-reader-friendly table view, not mock data.
 | `request_log.py` | Per-request JSONL log, powers `/stats` |
 | `feedback.py` | Human-in-the-loop feedback (`POST /v1/feedback`) + the bounded per-deeplink score adjustment that `deeplink_matching.py` consults on every search |
 | `middleware.py` | Request IDs, structured `{"error": {...}}` bodies, and per-route in-memory rate limiting |
-| `tests/` | pytest suite, ~92% line coverage, zero LLM key required — see "Run the tests" above |
+| `cli.py` | Terminal client (`query` / `stream` / `batch` / `health` / `stats`) -- runs the pipeline in-process by default, or against a live server with `--api-base` |
+| `tests/` | pytest suite, ~93% line coverage, zero LLM key required — see "Run the tests" above |
 
 ## Production-readiness notes
 
