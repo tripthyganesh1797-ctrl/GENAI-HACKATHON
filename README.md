@@ -293,6 +293,7 @@ with hover tooltips and a screen-reader-friendly table view, not mock data.
 | `official_theme2_data/` | Untouched copy of the official team-kit dataset (deeplinks.json, siis_responses.json, sample_output.json, schema_reference.py) |
 | `eval/eval_harness.py` | Runs the full pipeline against the 20 real queries, produces `eval/metrics.md` |
 | `eval/run_ablation.py` + `eval/matchers.py` | 3-variant deeplink-matching ablation (Full-LLM / Hybrid BM25+dense / Pure rules) against `eval/deeplink_ground_truth.json` (real catalog entries) |
+| `eval/generate_results_jsonl.py` → `results.jsonl` | The offline results file the Theme 2 FAQ asks for alongside the live API: one JSON line per official query (`{"query", "query_variations", "response", "meta"}`), covering all 20/20. Each line is a direct serialization of `run_pipeline()`'s real output — never separately-derived — so it can't drift from what the live API actually returns for the same input. Re-run after any change that could affect the 20 official queries' output. |
 | `request_log.py` | Per-request JSONL log, powers `/stats` |
 | `feedback.py` | Human-in-the-loop feedback (`POST /v1/feedback`) + the bounded per-deeplink score adjustment that `deeplink_matching.py` consults on every search |
 | `middleware.py` | Request IDs, structured `{"error": {...}}` bodies, and per-route in-memory rate limiting |
