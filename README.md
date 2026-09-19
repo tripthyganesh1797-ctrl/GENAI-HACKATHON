@@ -19,6 +19,29 @@ switch — whenever `LLM_API_KEY` isn't set, or an LLM call/JSON-parse fails
 after retries. `meta.used_offline_fallback` in every response says which
 path actually ran.
 
+Beyond the core troubleshooting pipeline, the service also ships:
+
+- **Confidence-gated escalation** (`escalation.py`) — a Goal the engine
+  itself judged uncertain still returns its full plan, plus an honest
+  caveat and a real backup action (`goal.escalation`).
+- **Structured device-signal input** (`device_signals.py`) — optional
+  battery/storage/uptime context reorders same-category actions toward
+  what's actually relevant and adds a short advisory note; a no-op when
+  omitted.
+- **Session-scoped avoidance** (`session_memory.py`) — mark a deeplink
+  unhelpful with a `session_id` and later requests in that same session
+  steer away from re-suggesting it, without touching the global
+  feedback-driven re-ranking.
+- **Trending issues on `/stats`** (`request_log.py`) — a finer-grained
+  "top recurring symptoms" breakdown (e.g. "Battery draining fast"), not
+  just a 5-bucket domain count.
+- **Shareable diagnostic reports** (`report.py`, `POST /v1/report`) —
+  packages an already-computed result into a compact Markdown or
+  self-contained HTML report a user can paste into a support ticket or
+  forward to someone else.
+- **Voice output** — `index.html`'s results panel can read the current
+  plan aloud via the Web Speech API, alongside the existing voice *input*.
+
 **Contents:** [Architecture](#architecture) · [Setup](#setup) · [Run the pipeline directly](#run-the-pipeline-directly-no-server-needed-fastest-way-to-test) · [Run the API server](#run-the-api-server) · [Run the tests](#run-the-tests) · [Run with Docker](#run-with-docker) · [Try the demo UI](#try-the-demo-ui) · [Project structure](#project-structure) · [Production-readiness notes](#production-readiness-notes) · [Submission checklist](#submission-checklist-per-hackathon_guidelinespdf) · [Known limitations](#known-limitations)
 
 ## Architecture
@@ -139,13 +162,26 @@ curl -X POST http://localhost:8000/v1/feedback \
 curl -X POST http://localhost:8000/v1/troubleshoot/batch \
   -H "Content-Type: application/json" \
   -d '{"items": [{"query": "battery drains fast"}, {"query": "screen flickers"}]}'
+
+# Optional device context + session_id -- reorders relevant actions and adds
+# an advisory note; session_id lets a later request in the same session
+# avoid re-suggesting a deeplink marked unhelpful via POST /v1/feedback:
+curl -X POST http://localhost:8000/v1/troubleshoot \
+  -H "Content-Type: application/json" \
+  -d '{"query": "battery drains fast", "device": {"battery_pct": 8}, "session_id": "demo-1"}'
+
+# Package an already-computed result into a shareable Markdown/HTML report
+# (never re-runs the pipeline -- see report.py):
+curl -X POST http://localhost:8000/v1/report \
+  -H "Content-Type: application/json" \
+  -d '{"result": <the exact body /v1/troubleshoot returned>, "format": "markdown"}'
 ```
 
 ## Run the tests
 
 ```bash
 pip install -r requirements.txt   # includes pytest / httpx (dev-only, see bottom of the file)
-pytest                             # 98 tests, ~92% line coverage, runs in ~15s, no LLM key needed
+pytest                             # 330 tests, ~97% line coverage, runs in ~10s, no LLM key needed
 pytest --cov=. --cov-report=term-missing   # optional, needs pytest-cov (already in requirements.txt)
 ```
 
@@ -176,6 +212,8 @@ python cli.py batch sample_queries_real.json --out results.json                 
 python cli.py --api-base http://localhost:8000 batch queries.json               # same, but against a live server (uses POST /v1/troubleshoot/batch)
 python cli.py --api-base http://localhost:8000 health
 python cli.py --api-base http://localhost:8000 stats
+python cli.py feedback bixby://masked/act/... "Wifi Settings" --unhelpful --session-id demo-1  # then re-run `query` with the same --session-id to see it steer away
+python cli.py report "camera app keeps crashing" --format html -o report.html                  # package a result as a shareable report
 ```
 
 Zero third-party dependencies for the `--api-base` HTTP calls (stdlib
@@ -199,10 +237,21 @@ Point it at a running `uvicorn` server (`API_BASE` at the top of the
 `<script>` block, defaults to `http://localhost:8000`). `demo.html` is a
 simpler, earlier version of the same UI kept for reference.
 
+A result's panel also offers an optional **device state** disclosure
+(battery/storage/uptime, reorders relevant steps), **📋 copy report /
+⬇ download report** buttons (packages the result via `POST /v1/report`),
+and, on a browser that supports it, a **🔊 read steps aloud** control
+(Web Speech API `SpeechSynthesis`, entirely client-side). A low-confidence
+match also shows an amber **escalation banner** with a backup action, and
+👍/👎 feedback on a matched deeplink is session-scoped — mark one
+unhelpful and the *next* query in that same browser tab steers away from
+suggesting it again.
+
 Click **telemetry** in the top-right to open the **analytics dashboard**:
-live stat tiles, a requests-by-domain bar chart, and a helpful/unhelpful
-feedback breakdown — all real numbers from `/stats`, with hover tooltips
-and a screen-reader-friendly table view, not mock data.
+live stat tiles, a requests-by-domain bar chart, a **trending issues**
+breakdown (the actual recurring symptoms, not just the domain bucket), and
+a helpful/unhelpful feedback breakdown — all real numbers from `/stats`,
+with hover tooltips and a screen-reader-friendly table view, not mock data.
 
 ## Project structure
 
@@ -213,11 +262,15 @@ and a screen-reader-friendly table view, not mock data.
 | `prompts.py` | LLM prompts (Stage 0 enrichment — now explicitly multi-language, Stage 1 extraction) |
 | `llm_client.py` | Swappable LLM API wrapper (Anthropic / OpenAI / Groq) |
 | `offline_fallback.py` | **Deterministic, zero-API-key replacement for Stages 0-1** — rule-based query enrichment + SIIS text parsing, $0 cost, no network |
-| `deeplink_matching.py` | Shared Stage 2 deeplink retrieval (BM25 + dense hybrid, or pure fuzzy-rules fallback), used by both execution paths and the ablation study |
+| `deeplink_matching.py` | Shared Stage 2 deeplink retrieval (BM25 + dense hybrid, or pure fuzzy-rules fallback), used by both execution paths and the ablation study; also owns the session-avoidance ranking helper (see `session_memory.py`) |
+| `escalation.py` | Shared confidence-gated escalation recommendation — attaches an honest caveat + real backup action to a low-confidence Goal without ever replacing the plan |
+| `device_signals.py` | Optional device-state context (battery/storage/uptime) — reorders same-category actions toward what's relevant, adds an advisory note; a no-op when omitted |
+| `session_memory.py` | Session-scoped avoidance: a deeplink marked unhelpful (with a `session_id`) is steered away from in that session's later requests — distinct from `feedback.py`'s global re-ranking |
+| `report.py` | Packages an already-computed result into a shareable Markdown/HTML report (`POST /v1/report`) — a pure formatter, never re-runs the pipeline |
 | `pipeline.py` | Orchestrates: complaint → enrich → extract → validate → deeplink match → cache, choosing LLM vs offline path per-request |
 | `cache.py` | Fast-path semantic cache (keyword overlap) |
-| `main.py` | FastAPI app: `POST /v1/troubleshoot`, `GET /health`, `GET /stats` — warms the deeplink index at startup |
-| `index.html` | Polished demo UI, with voice input + language selector |
+| `main.py` | FastAPI app: `POST /v1/troubleshoot(/batch)`, `GET /v1/troubleshoot/stream` (SSE), `POST /v1/feedback`, `POST /v1/report`, `GET /health`, `GET /stats` — warms the deeplink index at startup |
+| `index.html` | Polished demo UI — voice input + output, language selector, device-state panel, shareable reports, live analytics dashboard with trending issues |
 | `demo.html` | Simpler legacy demo UI |
 | `deeplinks.json` | **Real official catalog**: 578 masked deeplinks across the full Settings surface |
 | `siis_responses.json` | **Real official data**: 20 official SIIS support queries + their raw reference text |
@@ -230,8 +283,8 @@ and a screen-reader-friendly table view, not mock data.
 | `request_log.py` | Per-request JSONL log, powers `/stats` |
 | `feedback.py` | Human-in-the-loop feedback (`POST /v1/feedback`) + the bounded per-deeplink score adjustment that `deeplink_matching.py` consults on every search |
 | `middleware.py` | Request IDs, structured `{"error": {...}}` bodies, and per-route in-memory rate limiting |
-| `cli.py` | Terminal client (`query` / `stream` / `batch` / `health` / `stats`) -- runs the pipeline in-process by default, or against a live server with `--api-base` |
-| `tests/` | pytest suite, ~93% line coverage, zero LLM key required — see "Run the tests" above |
+| `cli.py` | Terminal client (`query` / `stream` / `batch` / `feedback` / `report` / `health` / `stats`) -- runs the pipeline in-process by default, or against a live server with `--api-base` |
+| `tests/` | pytest suite, ~97% line coverage, zero LLM key required — see "Run the tests" above |
 
 ## Production-readiness notes
 

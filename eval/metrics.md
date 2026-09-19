@@ -32,7 +32,7 @@ Evaluated against 20 official reference scenarios (Screen/Display domain).
 
 | Execution Path | Target (P95) | P50 (ms) | P95 (ms) |
 | :--- | :--- | :--- | :--- |
-| Cold query — full pipeline extraction & mapping | <= 8000 ms | 11.1 | 71.5 |
+| Cold query — full pipeline extraction & mapping | <= 8000 ms | 8.2 | 83.6 |
 
 ---
 
