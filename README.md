@@ -63,6 +63,48 @@ Beyond the core troubleshooting pipeline, the service also ships:
   gate G3's official-query coverage at risk (verified: none of the 20
   official queries trip it).
 
+### Research-paper-inspired extensions
+
+Four more features, each adapting an idea from a specific paper to this
+project's existing dual-path (LLM/offline) architecture rather than a
+literal port — see each module's docstring for the full honest mapping
+between the paper's method and what's actually implemented here.
+
+- **CLAM-inspired ambiguity confidence** (`ambiguity.py`, from *"CLAM:
+  Selective Clarification for Ambiguous Questions with Generative Language
+  Models"*) — a second, LLM-based opinion layered on top of `clarify.py`'s
+  zero-cost keyword heuristic. It can only ever RAISE the heuristic's
+  "needs clarification" verdict, never lower it, and it's a complete no-op
+  with no LLM key configured — so every guarantee `clarify.py` already had
+  (including never risking gate G3's coverage) stays fully intact.
+  `meta.ambiguity`.
+- **Guided-Retry recovery** (`recovery.py`, from *"When the Database
+  Fails: Prompting LLM Dialogue Agents for Safe Recovery in Task-Oriented
+  Dialogue"*) — when Stage 1's LLM call actually fails (not a legitimate
+  empty result — a real error), one structured retry with an explicit
+  recovery instruction is attempted before falling through to the offline
+  path, instead of a silent, "naive" drop straight to offline with zero
+  visibility into what happened. `meta.recovery`.
+- **SIA-inspired interactive investigator** (`investigator.py`, `POST
+  /v1/investigate/start` + `/answer`, from *"LLM-as-an-Investigator:
+  Evidence-First Reasoning for Robust Interactive Problem Diagnosis"*) —
+  an opt-in short Q&A that maintains a probability distribution over 2-3
+  candidate root causes (reusing `related_issues.py`'s curated data),
+  asks one targeted discriminative question at a time, updates the
+  distribution from the answer, and stops once a hypothesis clears 90%
+  confidence or 3 questions have been asked — then runs the *real*
+  pipeline against the winning hypothesis rather than inventing its own
+  plan. Fully offline-capable (a deterministic question sequence + a
+  keyword-bucket probability update) with an LLM-assisted upgrade when a
+  key is configured.
+- **DiagGPT-inspired session topic stack** (`topic_manager.py`, from
+  *"DiagGPT: An LLM-based and Multi-agent Dialogue System with Automatic
+  Topic Management for Flexible Task-Oriented Dialogue"*) — tracks a
+  per-session stack of symptom "topics" (stay on the current one, open a
+  new one, or jump back to one mentioned earlier), using a deterministic
+  bucket match instead of DiagGPT's own per-turn LLM agent. `meta.topic_stack`,
+  shown in `index.html` as a small "this session:" chip trail.
+
 **Contents:** [Architecture](#architecture) · [Setup](#setup) · [Run the pipeline directly](#run-the-pipeline-directly-no-server-needed-fastest-way-to-test) · [Run the API server](#run-the-api-server) · [Run the tests](#run-the-tests) · [Run with Docker](#run-with-docker) · [Try the demo UI](#try-the-demo-ui) · [Project structure](#project-structure) · [Production-readiness notes](#production-readiness-notes) · [Submission checklist](#submission-checklist-per-hackathon_guidelinespdf) · [Known limitations](#known-limitations)
 
 ## Architecture
@@ -242,13 +284,27 @@ curl -X POST http://localhost:8000/v1/resolution \
 curl -X POST http://localhost:8000/v1/troubleshoot \
   -H "Content-Type: application/json" \
   -d '{"query": "my screen looks weird", "image_data_url": "data:image/jpeg;base64,<...>"}'
+
+# SIA-inspired interactive diagnosis (see investigator.py) -- instead of
+# committing to the engine's first guess, ask a short targeted Q&A to
+# narrow down WHICH of several candidate root causes is actually correct,
+# then run the normal pipeline against the winning one:
+curl -X POST http://localhost:8000/v1/investigate/start \
+  -H "Content-Type: application/json" \
+  -d '{"complaint": "my battery drains really fast", "session_id": "demo-1"}'
+# -> {"investigation_id": "...", "status": "in_progress", "question": "...", "hypotheses": [...]}
+curl -X POST http://localhost:8000/v1/investigate/answer \
+  -H "Content-Type: application/json" \
+  -d '{"investigation_id": "<from above>", "answer": "it happens every single time, consistently"}'
+# -> repeat until "status": "resolved", which includes a real final_result
+#    (the exact same shape POST /v1/troubleshoot returns)
 ```
 
 ## Run the tests
 
 ```bash
 pip install -r requirements.txt   # includes pytest / httpx (dev-only, see bottom of the file)
-pytest                             # 464 tests, ~97% line coverage, runs in ~13s, no LLM key needed
+pytest                             # 536 tests, ~97% line coverage, runs in ~13s, no LLM key needed
 pytest --cov=. --cov-report=term-missing   # optional, needs pytest-cov (already in requirements.txt)
 ```
 
@@ -321,6 +377,14 @@ Samsung reference text, generic built-in knowledge, or an AI's general
 knowledge. 👍/👎 feedback on a matched deeplink is session-scoped — mark
 one unhelpful (directly, or via a "did this fix it?" No) and the *next*
 query in that same browser tab steers away from suggesting it again.
+A **"this session:" topic chip trail** (`topic_manager.py`) quietly
+appears once you've asked about more than one thing in the same tab, and
+a small note appears on any answer where the AI model failed once and a
+guided retry recovered it (`recovery.py`) — both silent otherwise. A
+**🔍 "not sure this is right? run a guided diagnosis"** button
+(`investigator.py`) opens an inline short Q&A that narrows down which of
+2-3 candidate causes is actually correct before showing you the real plan
+for that specific cause.
 
 Click **telemetry** in the top-right to open the **analytics dashboard**:
 live stat tiles, a requests-by-domain bar chart, a **trending issues**
@@ -347,11 +411,15 @@ with hover tooltips and a screen-reader-friendly table view, not mock data.
 | `related_issues.py` | When a plan's own confidence was borderline enough to already carry an `escalation` object, suggests 2-3 other plausible root causes for the same symptom (a hand-curated map keyed on `pipeline.py`'s existing symptom buckets) — `meta.related_possibilities`, empty whenever the engine is confident |
 | `resolution.py` | The goal-level "did this fix it?" Yes/No signal (`POST /v1/resolution`) — distinct from `feedback.py`'s per-deeplink thumbs up/down; fans a "No" out into that SAME per-deeplink scoring/session-avoidance machinery rather than duplicating it |
 | `image_analysis.py` | Point 1: turns an optionally-attached photo into a short factual description (never a diagnosis) that `pipeline.py` folds into the complaint text before Stage 0 — degrades honestly (`meta.image_analysis.reason`) when no key is configured, the model isn't vision-capable, or the call fails |
+| `ambiguity.py` | CLAM-inspired second opinion on `clarify.py`'s heuristic — an LLM-based confidence score that can only RAISE `meta.needs_clarification`, never lower it; a complete no-op with no LLM key |
+| `recovery.py` | Guided-Retry-inspired ("When the Database Fails") structured recovery when Stage 1's LLM call actually fails — one retry with an explicit recovery instruction before falling through to the offline path — `meta.recovery` |
+| `investigator.py` | SIA-inspired interactive diagnosis (`POST /v1/investigate/start`/`/answer`) — a probability vector over candidate root causes (reusing `related_issues.py`'s curated data), narrowed down via targeted questions, then handed to the real `run_pipeline()` |
+| `topic_manager.py` | DiagGPT-inspired per-session topic stack (stay / create / jump), deterministic bucket matching instead of DiagGPT's own per-turn LLM agent — `meta.topic_stack` |
 | `report.py` | Packages an already-computed result into a shareable Markdown/HTML report (`POST /v1/report`) — a pure formatter, never re-runs the pipeline |
 | `pipeline.py` | Orchestrates: (optional image →) complaint → enrich → extract → validate → deeplink match → cache, choosing LLM vs offline path per-request |
 | `cache.py` | Fast-path semantic cache (keyword overlap) |
-| `main.py` | FastAPI app: `POST /v1/troubleshoot(/batch)`, `GET /v1/troubleshoot/stream` (SSE), `POST /v1/feedback`, `POST /v1/resolution`, `POST /v1/report`, `GET /health`, `GET /stats` — warms the deeplink index at startup |
-| `index.html` | Polished demo UI — voice input + output, language selector, device-state panel, photo attach with client-side downscale, "where did this come from?" disclosure, related-possibilities chips, a "did this fix it?" resolution prompt, shareable reports, live analytics dashboard with trending issues |
+| `main.py` | FastAPI app: `POST /v1/troubleshoot(/batch)`, `GET /v1/troubleshoot/stream` (SSE), `POST /v1/feedback`, `POST /v1/resolution`, `POST /v1/report`, `POST /v1/investigate/start`, `POST /v1/investigate/answer`, `GET /v1/investigate/{id}`, `GET /health`, `GET /stats` — warms the deeplink index at startup |
+| `index.html` | Polished demo UI — voice input + output, language selector, device-state panel, photo attach with client-side downscale, "where did this come from?" disclosure, related-possibilities chips, a "did this fix it?" resolution prompt, session topic-stack chips, a guided-diagnosis (investigator) widget, shareable reports, live analytics dashboard with trending issues |
 | `demo.html` | Simpler legacy demo UI |
 | `deeplinks.json` | **Real official catalog**: 578 masked deeplinks across the full Settings surface |
 | `siis_responses.json` | **Real official data**: 20 official SIIS support queries + their raw reference text |
@@ -452,3 +520,38 @@ threshold isn't a clean fix), while the **LLM path correctly rejects it**
 via prompt rule #7's relevance judgment. This is the clearest concrete
 example of why the LLM path is the primary path and the rule-based
 fallback is a $0/always-available degrade, not a drop-in replacement.
+
+A few more, specific to this batch's 4 research-inspired extensions:
+
+- **`ambiguity.py`'s CLAM-style confidence is a self-reported score, not a
+  literal log-probability.** The paper's own method reads the model's
+  log-prob on a "True"/"False" token; none of this project's provider SDKs
+  (Anthropic/OpenAI/Groq chat-completions) expose per-token log-probs
+  without switching to a completions-style API this codebase doesn't use
+  elsewhere, so a structured few-shot self-report is used instead —
+  documented as exactly that in the module docstring, not dressed up as
+  the paper's literal method. Fully inert with no LLM key configured.
+- **`investigator.py`'s offline mode has a fixed, 3-question generic
+  question pool** (`_GENERIC_DISCRIMINATIVE_QUESTIONS`) rather than
+  genuinely tailored per-symptom questions — an LLM key upgrades this to
+  real per-turn generated questions. The offline probability update is a
+  simple keyword-bucket heuristic (software/hardware/external), not a
+  learned or LLM-driven Bayesian update — see the module docstring for the
+  full honest mapping to the paper's method.
+- **`investigator.py`'s session state is in-process only**, same
+  documented tradeoff as `middleware.py`'s rate limiter — an investigation
+  in progress is lost on a server restart. Fine for a short, few-round-trip
+  interaction in a hackathon-scale demo; a real deployment would move this
+  to a shared store (Redis, same as the rate limiter's own noted upgrade
+  path).
+- **`recovery.py`'s Guided-Retry only covers Stage 1's LLM call**, not
+  Stage 0's enrichment call — this project has no live backend database to
+  inject the paper's specific empty-result/wrong-domain fault types into,
+  so the scope is narrowed to the one place an actual LLM-call failure can
+  happen and be usefully retried; see the module's own scope note.
+- **`topic_manager.py`'s topic identity is `pipeline.py`'s existing
+  ~17-bucket keyword vocabulary**, not a genuine semantic topic model — two
+  complaints that are really about different things but share a bucket
+  (or vice versa) can be mis-tracked. Same tradeoff this codebase already
+  makes everywhere else it uses that bucket vocabulary (`/stats`'s
+  trending issues, `related_issues.py`).
