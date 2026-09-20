@@ -149,6 +149,11 @@ class Meta(BaseModel):
     # knowledge, or the safety rule), surfaced for the UI's "where did this
     # come from?" disclosure.
     answer_source: Optional[Dict] = None
+    # related_issues.py -- when this plan's own confidence was borderline
+    # (it already carries an escalation recommendation, see escalation.py),
+    # 2-3 other plausible root causes for the same reported symptom. Empty
+    # whenever the engine is confident in its single best match.
+    related_possibilities: List[str] = []
 
 
 class TroubleshootResponse(BaseModel):

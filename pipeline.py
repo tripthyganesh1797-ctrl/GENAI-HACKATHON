@@ -33,6 +33,7 @@ from session_memory import get_avoid_set
 from safety import detect_physical_hazard, build_safety_goal
 from clarify import detect_vague_complaint, build_clarifying_question, CLARIFYING_TOPIC_OPTIONS
 from answer_source import classify_answer_source
+from related_issues import suggest_related_issues
 import offline_fallback
 
 _PLACEHOLDER_KEYS = {None, "", "your_key_here"}
@@ -342,6 +343,10 @@ def _build_safety_response(raw_complaint: str, hazard_reason: str, start: float)
                 used_builtin_reference=False, siis_response_provided=False,
                 has_contexts=True,
             ),
+            # A safety short-circuit already IS the single, certain answer
+            # (a hazard warning) -- there's no "borderline confidence" for
+            # related_issues.py to react to here; always [].
+            "related_possibilities": [],
         },
     }
 
@@ -423,6 +428,16 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
             siis_response_provided=bool(siis_response and siis_response.strip()),
             has_contexts=bool(cached["response"]["contexts"]),
         ))
+        # Same "computed once, not request-specific" treatment as
+        # answer_source above: whether the cached plan was borderline was
+        # already decided when it was written (a Goal either carries an
+        # escalation object or it doesn't), and the symptom bucket comes
+        # from technical_query -- the cache key itself -- not anything
+        # about THIS particular request. .setdefault() backfills entries
+        # cached before this field existed.
+        cached["meta"].setdefault("related_possibilities", suggest_related_issues(
+            _guess_issue_phrase(technical_query)
+        ) if any(g.get("escalation") for g in cached["response"]["contexts"]) else [])
         append_log({
             "domain_guess": _guess_topic(technical_query),
             "issue_guess": _guess_issue_phrase(technical_query),
@@ -495,6 +510,13 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
                 siis_response_provided=bool(siis_response and siis_response.strip()),
                 has_contexts=bool(contexts),
             ),
+            # related_issues.py: only surfaced when this plan's own
+            # confidence was borderline enough to already carry an
+            # escalation recommendation (see escalation.py) -- when the
+            # engine is confident, a list of "or maybe it's this instead"
+            # alternatives would just undermine a correct answer.
+            "related_possibilities": suggest_related_issues(_guess_issue_phrase(technical_query))
+            if any(g.get("escalation") for g in contexts) else [],
         },
     }
 
@@ -603,6 +625,9 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
                 siis_response_provided=bool(siis_response and siis_response.strip()),
                 has_contexts=bool(cached["response"]["contexts"]),
             ))
+            cached["meta"].setdefault("related_possibilities", suggest_related_issues(
+                _guess_issue_phrase(technical_query)
+            ) if any(g.get("escalation") for g in cached["response"]["contexts"]) else [])
             yield {"stage": "cache", "status": "hit"}
             append_log({
                 "domain_guess": _guess_topic(technical_query),
@@ -685,6 +710,8 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
                     siis_response_provided=bool(siis_response and siis_response.strip()),
                     has_contexts=bool(contexts),
                 ),
+                "related_possibilities": suggest_related_issues(_guess_issue_phrase(technical_query))
+                if any(g.get("escalation") for g in contexts) else [],
             },
         }
 

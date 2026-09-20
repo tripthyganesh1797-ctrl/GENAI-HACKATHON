@@ -333,6 +333,21 @@ resultContainer.addEventListener('click', (e) => {
     : current || topic;
   runDiagnosis();
 });
+
+// related_issues.py's chips (relatedPossibilitiesBanner()) -- same
+// delegated-click reasoning as the clarify-topic-chip handler above:
+// rendered dynamically inside resultContainer, so binding has to happen
+// on the stable parent. Replaces the complaint text outright (an
+// alternative root cause is a different hypothesis, not something to
+// append onto the current wording) and re-runs immediately.
+resultContainer.addEventListener('click', (e) => {
+  const chip = e.target.closest('.related-issue-chip');
+  if (!chip) return;
+  const issue = chip.dataset.issue || '';
+  if (!issue) return;
+  complaintInput.value = issue;
+  runDiagnosis();
+});
 complaintInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
@@ -511,7 +526,7 @@ async function runDiagnosis() {
                    data.meta?.session_notes || [], data.meta?.safety_alert || false,
                    data.meta?.safety_reason || null, data.meta?.needs_clarification || false,
                    data.meta?.clarifying_question || null, data.meta?.clarifying_topic_options || [],
-                   data.meta?.answer_source || null);
+                   data.meta?.answer_source || null, data.meta?.related_possibilities || []);
 
   } catch (err) {
     setApiOnline(false);
@@ -799,10 +814,36 @@ function sourceDisclosure(answerSource) {
   `;
 }
 
-function renderContexts(contexts, query, deviceContextNotes = [], sessionNotes = [], safetyAlert = false, safetyReason = null, needsClarification = false, clarifyingQuestion = null, clarifyingTopicOptions = [], answerSource = null) {
+// related_issues.py: only populated when this plan's own confidence was
+// borderline enough to already carry a per-goal escalation caveat (see
+// escalationBanner() above) -- so rather than duplicate that "lower-
+// confidence match" warning, this banner assumes the user already saw it
+// and focuses on what to DO about it: 2-3 other plausible root causes for
+// the same symptom, each one clickable to immediately re-run the
+// diagnosis against that alternative (same delegated-chip pattern as
+// clarifyBanner()'s topic chips, just a different data attribute/class so
+// the two click handlers never collide).
+function relatedPossibilitiesBanner(relatedPossibilities) {
+  if (!relatedPossibilities || relatedPossibilities.length === 0) return '';
+  const chips = relatedPossibilities.map(p => `
+    <button type="button" class="related-issue-chip text-left text-xs px-3 py-2 rounded-lg border border-amber/40 text-ink/90 hover:bg-amber/10 transition-colors" data-issue="${escapeHtml(p)}">
+      ${escapeHtml(p)}
+    </button>
+  `).join('');
+  return `
+    <div class="mb-5 bg-amber/10 border border-amber/40 rounded-xl px-4 py-3.5 fade-up">
+      <p class="text-amber font-display font-semibold text-xs mb-1">&#129300; This match wasn't a sure thing -- it could also be:</p>
+      <p class="text-inkdim text-xs mb-3">Tap one to re-check against that possibility instead.</p>
+      <div class="grid sm:grid-cols-2 gap-2">${chips}</div>
+    </div>
+  `;
+}
+
+function renderContexts(contexts, query, deviceContextNotes = [], sessionNotes = [], safetyAlert = false, safetyReason = null, needsClarification = false, clarifyingQuestion = null, clarifyingTopicOptions = [], answerSource = null, relatedPossibilities = []) {
   const notesHtml = safetyBanner(safetyAlert, safetyReason) +
                      clarifyBanner(needsClarification, clarifyingQuestion, clarifyingTopicOptions) +
                      sourceDisclosure(answerSource) +
+                     relatedPossibilitiesBanner(relatedPossibilities) +
                      deviceContextNotesBanner(deviceContextNotes) + sessionNotesBanner(sessionNotes);
   if (!contexts || contexts.length === 0) {
     resultContainer.innerHTML = `
