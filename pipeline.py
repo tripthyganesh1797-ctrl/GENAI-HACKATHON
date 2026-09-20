@@ -34,6 +34,7 @@ from safety import detect_physical_hazard, build_safety_goal
 from clarify import detect_vague_complaint, build_clarifying_question, CLARIFYING_TOPIC_OPTIONS
 from answer_source import classify_answer_source
 from related_issues import suggest_related_issues
+from image_analysis import describe_image, NO_IMAGE_ANALYSIS
 import offline_fallback
 
 _PLACEHOLDER_KEYS = {None, "", "your_key_here"}
@@ -347,40 +348,68 @@ def _build_safety_response(raw_complaint: str, hazard_reason: str, start: float)
             # (a hazard warning) -- there's no "borderline confidence" for
             # related_issues.py to react to here; always [].
             "related_possibilities": [],
+            # Placeholder -- the real, request-specific value (whether an
+            # image was attached, and what it showed) is spliced in by
+            # run_pipeline() right after this call, same reasoning as
+            # needs_clarification elsewhere; this default only matters if
+            # this helper is ever called standalone.
+            "image_analysis": dict(NO_IMAGE_ANALYSIS),
         },
     }
 
 
 def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[dict] = None,
-                  session_id: Optional[str] = None) -> dict:
+                  session_id: Optional[str] = None, image_data_url: Optional[str] = None) -> dict:
     start = time.time()
     total_prompt_tokens = 0
     total_completion_tokens = 0
     used_fallback_any = False
 
+    # image_analysis.py (point 1): a complete no-op when image_data_url is
+    # None (the overwhelming majority of requests) -- describe_image()
+    # returns NO_IMAGE_ANALYSIS instantly with no LLM call. When an image
+    # IS supplied and successfully analyzed, its factual description is
+    # folded into `effective_complaint`, which -- and ONLY which -- feeds
+    # every downstream stage below (hazard detection, clarify, Stage 0/1).
+    # `raw_complaint` itself is left untouched so response["query"] still
+    # shows exactly what the user typed, not the image analysis text.
+    image_analysis = describe_image(image_data_url)
+    effective_complaint = raw_complaint
+    if image_analysis["analyzed"] and image_analysis["description"]:
+        effective_complaint = f"{raw_complaint}\n\n[What the attached photo shows: {image_analysis['description']}]"
+
     # Physical-hazard short-circuit (safety.py) -- runs before ANYTHING
     # else, including the cache lookup, so it can never be skipped by a
     # stale cache entry and never pollutes the cache for this query's
     # normal technical_query key. See _build_safety_response()/safety.py.
-    hazard_reason = detect_physical_hazard(raw_complaint)
+    # Checked against effective_complaint so a photo showing e.g. visible
+    # smoke or a swollen battery can trigger this even if the typed text
+    # alone wouldn't have -- no separate image-specific safety path needed.
+    hazard_reason = detect_physical_hazard(effective_complaint)
     if hazard_reason:
-        return _build_safety_response(raw_complaint, hazard_reason, start)
+        response = _build_safety_response(raw_complaint, hazard_reason, start)
+        response["meta"]["image_analysis"] = image_analysis
+        return response
 
     # clarify.py: purely additive (see its module docstring) -- computed
-    # once here from the raw complaint text itself (not technical_query,
-    # and not dependent on cache/Stage0/1 at all) so it's cheap, always
-    # available, and applies identically whether this request is served
-    # from cache or extracted fresh below.
-    needs_clarification = detect_vague_complaint(raw_complaint)
-    clarifying_question = build_clarifying_question(raw_complaint) if needs_clarification else None
+    # once here from the (image-informed) complaint text itself (not
+    # technical_query, and not dependent on cache/Stage0/1 at all) so it's
+    # cheap, always available, and applies identically whether this
+    # request is served from cache or extracted fresh below.
+    needs_clarification = detect_vague_complaint(effective_complaint)
+    clarifying_question = build_clarifying_question(effective_complaint) if needs_clarification else None
 
     # Task 36: which deeplinks (if any) THIS session already tried and
     # marked unhelpful. Empty for no session_id / a session with no
     # negative feedback yet -- the common case, and a complete no-op.
     avoid_deeplinks = get_avoid_set(session_id)
 
-    # Stage 0
-    enrichment, fb0 = stage0_enrich(raw_complaint)
+    # Stage 0 -- runs against effective_complaint (raw text + any folded-in
+    # image description), so an attached photo can genuinely change what
+    # technical_query comes out, and therefore which cache entry/plan this
+    # request lands on. See image_analysis.py's module docstring for why
+    # that's the right behavior rather than something to special-case.
+    enrichment, fb0 = stage0_enrich(effective_complaint)
     used_fallback_any = used_fallback_any or fb0
     if not fb0:
         total_prompt_tokens += LAST_USAGE["prompt_tokens"]
@@ -416,6 +445,11 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
         cached["meta"]["needs_clarification"] = needs_clarification
         cached["meta"]["clarifying_question"] = clarifying_question
         cached["meta"]["clarifying_topic_options"] = CLARIFYING_TOPIC_OPTIONS if needs_clarification else []
+        # Same "request-specific, recompute fresh" treatment as
+        # needs_clarification above: whether THIS request attached a photo
+        # (and what it showed) has nothing to do with which cache slot the
+        # resulting technical_query happened to land on.
+        cached["meta"]["image_analysis"] = image_analysis
         # answer_source (and related_possibilities, below) DO reflect how the
         # cached plan was actually produced, so they're baked in at cache-write
         # time and read as-is here -- except a cache entry written before this
@@ -517,6 +551,10 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
             # alternatives would just undermine a correct answer.
             "related_possibilities": suggest_related_issues(_guess_issue_phrase(technical_query))
             if any(g.get("escalation") for g in contexts) else [],
+            # image_analysis.py (point 1): request-specific, same as
+            # needs_clarification above -- always the CURRENT request's own
+            # image result, never something a cache entry could bake in.
+            "image_analysis": image_analysis,
         },
     }
 
@@ -557,7 +595,15 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
 def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: Optional[dict] = None,
                             session_id: Optional[str] = None):
     """Generator of small dicts: {"stage": ..., "status": "running"|"done"|"error", "data": {...}}.
-    Caller (main.py's SSE route) is responsible for JSON-encoding each one."""
+    Caller (main.py's SSE route) is responsible for JSON-encoding each one.
+
+    Deliberately does NOT accept image_data_url (see run_pipeline()'s
+    image_analysis.py wiring for the non-streaming path): main.py's SSE
+    route is GET-only (the browser EventSource API has no POST variant),
+    and a base64-encoded photo is far too large for a URL query string.
+    Every meta dict below still carries image_analysis, fixed at
+    NO_IMAGE_ANALYSIS, so a caller reading meta.image_analysis.provided
+    never has to special-case which endpoint it called."""
     start = time.time()
     total_prompt_tokens = 0
     total_completion_tokens = 0
@@ -628,6 +674,7 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
             cached["meta"].setdefault("related_possibilities", suggest_related_issues(
                 _guess_issue_phrase(technical_query)
             ) if any(g.get("escalation") for g in cached["response"]["contexts"]) else [])
+            cached["meta"]["image_analysis"] = dict(NO_IMAGE_ANALYSIS)  # streaming never accepts images
             yield {"stage": "cache", "status": "hit"}
             append_log({
                 "domain_guess": _guess_topic(technical_query),
@@ -712,6 +759,7 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
                 ),
                 "related_possibilities": suggest_related_issues(_guess_issue_phrase(technical_query))
                 if any(g.get("escalation") for g in contexts) else [],
+                "image_analysis": dict(NO_IMAGE_ANALYSIS),  # streaming never accepts images, see above
             },
         }
 

@@ -99,11 +99,12 @@ class TestBatchTroubleshoot:
         real_run_pipeline = main.run_pipeline
         calls = {"n": 0}
 
-        def flaky(query, siis_response="", device=None, session_id=None):
+        def flaky(query, siis_response="", device=None, session_id=None, image_data_url=None):
             calls["n"] += 1
             if calls["n"] == 2:
                 raise RuntimeError("simulated per-item crash")
-            return real_run_pipeline(query, siis_response, device=device, session_id=session_id)
+            return real_run_pipeline(query, siis_response, device=device, session_id=session_id,
+                                      image_data_url=image_data_url)
 
         monkeypatch.setattr(main, "run_pipeline", flaky)
         res = client.post("/v1/troubleshoot/batch", json={
@@ -269,6 +270,30 @@ def test_stats_includes_feedback_section(client):
     assert "total_feedback_events" in body["feedback"]
 
 
+def test_troubleshoot_with_image_degrades_gracefully_without_vision_setup(client):
+    """Full stack, no monkeypatching: this test environment has no LLM key
+    configured, so an attached image must degrade honestly (meta.image_analysis)
+    rather than crash the request -- the plan itself still comes back exactly
+    as it would with no image at all."""
+    res = client.post("/v1/troubleshoot", json={
+        "query": "my battery is draining too fast",
+        "image_data_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    })
+    assert res.status_code == 200
+    body = res.json()
+    assert "response" in body
+    img = body["meta"]["image_analysis"]
+    assert img["provided"] is True
+    assert img["analyzed"] is False
+    assert img["reason"]
+
+
+def test_troubleshoot_without_image_field_is_unaffected(client):
+    res = client.post("/v1/troubleshoot", json={"query": "my battery is draining too fast"})
+    assert res.status_code == 200
+    assert res.json()["meta"]["image_analysis"]["provided"] is False
+
+
 class TestDeviceContext:
     """Task 35: POST /v1/troubleshoot(/batch) and GET /v1/troubleshoot/stream
     all accept optional device-state signals and thread them into
@@ -281,7 +306,7 @@ class TestDeviceContext:
         import main
         captured = {}
 
-        def fake_run_pipeline(query, siis_response="", device=None, session_id=None):
+        def fake_run_pipeline(query, siis_response="", device=None, session_id=None, image_data_url=None):
             captured["device"] = device
             return {"query": query, "query_variations": [], "response": {"contexts": []},
                     "meta": {"latency_ms": 1.0, "cache_hit": False, "model": "x",
@@ -296,7 +321,7 @@ class TestDeviceContext:
         import main
         captured = {}
 
-        def fake_run_pipeline(query, siis_response="", device=None, session_id=None):
+        def fake_run_pipeline(query, siis_response="", device=None, session_id=None, image_data_url=None):
             captured["device"] = device
             return {"query": query, "query_variations": [], "response": {"contexts": []},
                     "meta": {"latency_ms": 1.0, "cache_hit": False, "model": "x",
@@ -322,7 +347,7 @@ class TestDeviceContext:
         import main
         captured = []
 
-        def fake_run_pipeline(query, siis_response="", device=None, session_id=None):
+        def fake_run_pipeline(query, siis_response="", device=None, session_id=None, image_data_url=None):
             captured.append(device)
             return {"query": query, "query_variations": [], "response": {"contexts": []},
                     "meta": {"latency_ms": 1.0, "cache_hit": False, "model": "x",
@@ -382,7 +407,7 @@ class TestSessionMemory:
         import main
         captured = {}
 
-        def fake_run_pipeline(query, siis_response="", device=None, session_id=None):
+        def fake_run_pipeline(query, siis_response="", device=None, session_id=None, image_data_url=None):
             captured["session_id"] = session_id
             return {"query": query, "query_variations": [], "response": {"contexts": []},
                     "meta": {"latency_ms": 1.0, "cache_hit": False, "model": "x",
@@ -397,7 +422,7 @@ class TestSessionMemory:
         import main
         captured = {}
 
-        def fake_run_pipeline(query, siis_response="", device=None, session_id=None):
+        def fake_run_pipeline(query, siis_response="", device=None, session_id=None, image_data_url=None):
             captured["session_id"] = session_id
             return {"query": query, "query_variations": [], "response": {"contexts": []},
                     "meta": {"latency_ms": 1.0, "cache_hit": False, "model": "x",
@@ -412,7 +437,7 @@ class TestSessionMemory:
         import main
         captured = []
 
-        def fake_run_pipeline(query, siis_response="", device=None, session_id=None):
+        def fake_run_pipeline(query, siis_response="", device=None, session_id=None, image_data_url=None):
             captured.append(session_id)
             return {"query": query, "query_variations": [], "response": {"contexts": []},
                     "meta": {"latency_ms": 1.0, "cache_hit": False, "model": "x",

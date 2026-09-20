@@ -126,7 +126,7 @@ def troubleshoot(payload: TroubleshootRequest, request: Request):
     # {"error": {...}} shape every other failure mode in this service uses.
     device = payload.device.model_dump(exclude_none=True) if payload.device else None
     result = run_pipeline(payload.query, payload.siis_response or "", device=device,
-                           session_id=payload.session_id)
+                           session_id=payload.session_id, image_data_url=payload.image_data_url)
     result.setdefault("meta", {})["request_id"] = request.state.request_id
     return result
 
@@ -149,7 +149,7 @@ def troubleshoot_batch(payload: BatchTroubleshootRequest, request: Request):
         try:
             device = item.device.model_dump(exclude_none=True) if item.device else None
             result = run_pipeline(item.query, item.siis_response or "", device=device,
-                                   session_id=item.session_id)
+                                   session_id=item.session_id, image_data_url=item.image_data_url)
             results.append({"ok": True, "result": result})
         except Exception as e:
             results.append({"ok": False, "error": str(e), "query": item.query})

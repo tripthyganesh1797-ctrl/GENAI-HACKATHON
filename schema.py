@@ -126,6 +126,15 @@ class TroubleshootRequest(BaseModel):
     # and marked unhelpful via POST /v1/feedback. No session_id anywhere ->
     # this feature is a complete no-op.
     session_id: Optional[str] = None
+    # Point 1 (image_analysis.py): an optional base64 data URL
+    # (data:<mime>;base64,<data>) for a photo of the problem -- "so that
+    # the problem will be very clear", the user's own words. Entirely
+    # opt-in and additive: with this omitted, request handling is
+    # byte-identical to before this feature existed. Deliberately NOT
+    # format-validated here -- a malformed/corrupted value degrades
+    # honestly inside image_analysis.py (meta.image_analysis.reason)
+    # rather than failing the whole request with a 422.
+    image_data_url: Optional[str] = None
 
 
 class Meta(BaseModel):
@@ -154,6 +163,11 @@ class Meta(BaseModel):
     # 2-3 other plausible root causes for the same reported symptom. Empty
     # whenever the engine is confident in its single best match.
     related_possibilities: List[str] = []
+    # image_analysis.py (point 1) -- always present, shaped as
+    # {"provided": bool, "analyzed": bool, "description": str|None, "reason": str|None}.
+    # `reason` explains an honest degrade (no key, non-vision model, a
+    # failed call) whenever provided=True but analyzed=False.
+    image_analysis: Optional[Dict] = None
 
 
 class TroubleshootResponse(BaseModel):
@@ -168,6 +182,7 @@ class BatchTroubleshootItem(BaseModel):
     siis_response: Optional[str] = None
     device: Optional[DeviceContext] = None
     session_id: Optional[str] = None
+    image_data_url: Optional[str] = None
 
 
 class BatchTroubleshootRequest(BaseModel):

@@ -14,6 +14,12 @@ def test_troubleshoot_request_requires_query():
         TroubleshootRequest()
     req = TroubleshootRequest(query="battery drains fast")
     assert req.siis_response is None
+    assert req.image_data_url is None
+
+
+def test_troubleshoot_request_accepts_image_data_url():
+    req = TroubleshootRequest(query="my screen looks cracked", image_data_url="data:image/png;base64,QUJD")
+    assert req.image_data_url == "data:image/png;base64,QUJD"
 
 
 def test_goal_object_builds_from_valid_dict():
