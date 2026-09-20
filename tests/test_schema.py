@@ -4,8 +4,8 @@ from pydantic import ValidationError
 
 from schema import (
     Action, ActionCategory, BatchTroubleshootRequest, DeviceContext, EscalationAction,
-    EscalationRecommendation, FeedbackRequest, Goal, Meta, ReportRequest, StepGroup,
-    TroubleshootRequest,
+    EscalationRecommendation, FeedbackRequest, Goal, Meta, ReportRequest, ResolutionDeeplink,
+    ResolutionRequest, StepGroup, TroubleshootRequest,
 )
 
 
@@ -50,6 +50,29 @@ def test_feedback_request_requires_deeplink_action_helpful():
     fb = FeedbackRequest(deeplink="bixby://masked/act/x", action_name="Wifi Settings", helpful=False)
     assert fb.query is None
     assert fb.comment is None
+
+
+def test_resolution_request_requires_goal_title_and_resolved():
+    with pytest.raises(ValidationError):
+        ResolutionRequest(deeplinks=[])  # missing goal_title and resolved
+
+    req = ResolutionRequest(goal_title="Battery fast drain", resolved=False)
+    assert req.deeplinks == []
+    assert req.query is None
+    assert req.session_id is None
+
+
+def test_resolution_request_accepts_deeplinks_list():
+    req = ResolutionRequest(
+        goal_title="Battery fast drain",
+        resolved=True,
+        deeplinks=[
+            ResolutionDeeplink(deeplink="bixby://masked/act/x", action_name="Battery Settings"),
+            {"deeplink": "bixby://masked/act/y", "action_name": "Power Saving"},
+        ],
+    )
+    assert len(req.deeplinks) == 2
+    assert req.deeplinks[1].action_name == "Power Saving"
 
 
 def test_goal_accepts_optional_escalation():

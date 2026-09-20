@@ -16,12 +16,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from schema import TroubleshootRequest, FeedbackRequest, BatchTroubleshootRequest, ReportRequest
+from schema import TroubleshootRequest, FeedbackRequest, BatchTroubleshootRequest, ReportRequest, ResolutionRequest
 
 from pipeline import run_pipeline, run_pipeline_streaming, llm_available
 from request_log import compute_stats
 from deeplink_matching import get_index, DUMMY_POSITIVE_DEEPLINK
 import feedback as feedback_module
+import resolution as resolution_module
 from report import generate_report, SUPPORTED_FORMATS
 from middleware import (
     RequestIDMiddleware, RateLimitMiddleware, error_body,
@@ -59,6 +60,7 @@ app.add_middleware(
         "/v1/troubleshoot": troubleshoot_limiter,  # covers both POST and the /stream GET
         "/v1/troubleshoot/batch": batch_limiter,   # longest-prefix-wins over the line above
         "/v1/feedback": feedback_limiter,
+        "/v1/resolution": feedback_limiter,  # same cheap-write shape as /v1/feedback
     },
 )
 app.add_middleware(RequestIDMiddleware)
@@ -231,6 +233,26 @@ def submit_feedback(payload: FeedbackRequest, request: Request):
     return {"status": "recorded", "request_id": request.state.request_id, **result}
 
 
+@app.post("/v1/resolution")
+def submit_resolution(payload: ResolutionRequest, request: Request):
+    """Point 5: the goal-level "did this fix it?" Yes/No check, asked once
+    after a plan has been shown and attempted -- distinct from the
+    per-deeplink thumbs up/down above (POST /v1/feedback), which rates
+    match quality and can be answered before ever trying the steps. See
+    resolution.py for how a "No" is fanned out into the SAME per-deeplink
+    scoring and session-avoidance machinery /v1/feedback already drives,
+    so the next request in this session already steers away from a plan
+    that just failed."""
+    result = resolution_module.record_resolution(
+        goal_title=payload.goal_title,
+        deeplinks=[d.model_dump() for d in payload.deeplinks],
+        resolved=payload.resolved,
+        query=payload.query or "",
+        session_id=payload.session_id or "",
+    )
+    return {"status": "recorded", "request_id": request.state.request_id, **result}
+
+
 @app.post("/v1/report")
 def report(payload: ReportRequest, request: Request):
     """Task 38: packages an already-computed /v1/troubleshoot(/stream)
@@ -262,4 +284,8 @@ def stats():
     fast") rather than just the coarse domain bucket. Real numbers for your
     metrics report, computed from actual usage rather than a handful of
     manual test runs."""
-    return {**compute_stats(), "feedback": feedback_module.feedback_summary()}
+    return {
+        **compute_stats(),
+        "feedback": feedback_module.feedback_summary(),
+        "resolution": resolution_module.resolution_summary(),
+    }

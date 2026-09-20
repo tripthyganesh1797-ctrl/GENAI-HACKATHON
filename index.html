@@ -897,9 +897,100 @@ function renderContexts(contexts, query, deviceContextNotes = [], sessionNotes =
         </div>
         ${escalationBanner(goal.escalation)}
         <div>${timelineHtml}</div>
+        ${resolutionWidget(goal, query, relatedPossibilities)}
       </div>
     `;
   }).join('');
+}
+
+// Point 5: the goal-level "did this fix it?" Yes/No check, asked once per
+// plan after its steps are shown -- distinct from feedbackWidget() above,
+// which rates ONE deeplink's match quality and can be answered before ever
+// trying the steps (see resolution.py for the full rationale and how a
+// "No" reuses the SAME per-deeplink feedback/avoidance machinery). Same
+// window-stashed-payload pattern as feedbackWidget()/submitFeedback().
+let _resolutionSeq = 0;
+
+function resolutionWidget(goal, query, relatedPossibilities) {
+  const wid = `res-${++_resolutionSeq}`;
+  const deeplinks = (goal.actions || [])
+    .map(a => ({ dl: a.stepGroups?.[0]?.actionableDeeplink, actionName: a.actionName || '' }))
+    .filter(d => d.dl && d.dl.deeplink && d.dl.deeplink !== DUMMY_DEEPLINK)
+    .map(d => ({ deeplink: d.dl.deeplink, action_name: d.actionName }));
+  window[`__res_${wid}`] = {
+    goalTitle: goal.title || goal.goal || '',
+    deeplinks,
+    query,
+    relatedPossibilities: relatedPossibilities || [],
+  };
+  return `
+    <div id="${wid}" class="mt-5 pt-4 border-t border-line/60">
+      <div class="flex items-center gap-3 flex-wrap">
+        <span class="text-ink/90 text-xs font-mono">Did this fix it?</span>
+        <button onclick="submitResolution('${wid}', true)"
+          class="resolution-btn text-xs px-3 py-1 rounded-lg border border-cyan/40 text-cyan hover:bg-cyan/10 transition-colors">Yes</button>
+        <button onclick="submitResolution('${wid}', false)"
+          class="resolution-btn text-xs px-3 py-1 rounded-lg border border-red/40 text-red hover:bg-red/10 transition-colors">No</button>
+        <span class="resolution-status text-[10px] font-mono text-inkdim"></span>
+      </div>
+      <div class="resolution-followup mt-3"></div>
+    </div>
+  `;
+}
+
+async function submitResolution(wid, resolved) {
+  const el = document.getElementById(wid);
+  if (!el) return;
+  const payload = window[`__res_${wid}`];
+  el.querySelectorAll('.resolution-btn').forEach(b => b.disabled = true);
+  const statusEl = el.querySelector('.resolution-status');
+  const followupEl = el.querySelector('.resolution-followup');
+  statusEl.textContent = 'sending…';
+  try {
+    const res = await fetch(`${API_BASE}/v1/resolution`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        goal_title: payload.goalTitle,
+        deeplinks: payload.deeplinks,
+        resolved,
+        query: payload.query || '',
+        session_id: SESSION_ID,
+      }),
+    });
+    if (!res.ok) throw new Error(`${res.status}`);
+
+    if (resolved) {
+      statusEl.textContent = 'glad it worked ✓';
+      statusEl.className = 'resolution-status text-[10px] font-mono text-cyan';
+      return;
+    }
+
+    // Task 36: same session-scoped effect a thumbs-down already has --
+    // worth saying plainly, since the win here is invisible otherwise.
+    statusEl.textContent = "thanks — won't re-suggest this in your next diagnosis here";
+    statusEl.className = 'resolution-status text-[10px] font-mono text-red';
+
+    // Point 3 + point 5 working together: a "no" shouldn't dead-end the
+    // user -- immediately offer the same borderline alternatives (if any)
+    // right where they're already looking, one tap away from re-running
+    // the diagnosis against a different plausible cause.
+    if (payload.relatedPossibilities && payload.relatedPossibilities.length) {
+      followupEl.innerHTML = `
+        <p class="text-inkdim text-xs mb-2">Might it be one of these instead?</p>
+        <div class="grid sm:grid-cols-2 gap-2">
+          ${payload.relatedPossibilities.map(p => `
+            <button type="button" class="related-issue-chip text-left text-xs px-3 py-2 rounded-lg border border-amber/40 text-ink/90 hover:bg-amber/10 transition-colors" data-issue="${escapeHtml(p)}">${escapeHtml(p)}</button>
+          `).join('')}
+        </div>
+      `;
+    } else {
+      followupEl.innerHTML = `<p class="text-inkdim text-xs">Try describing the symptom a bit differently, or use the lower-confidence backup action above if one was offered.</p>`;
+    }
+  } catch (err) {
+    statusEl.textContent = 'failed to send';
+    el.querySelectorAll('.resolution-btn').forEach(b => b.disabled = false);
+  }
 }
 
 // Task 38: packages the last full pipeline result (report.py, via

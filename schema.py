@@ -196,6 +196,28 @@ class ReportRequest(BaseModel):
     format: str = Field("markdown", description="\"markdown\" or \"html\"")
 
 
+class ResolutionDeeplink(BaseModel):
+    """One real matched deeplink from a Goal, paired with the action it
+    belongs to -- see ResolutionRequest below."""
+    deeplink: str
+    action_name: str
+
+
+class ResolutionRequest(BaseModel):
+    """POST /v1/resolution (point 5) -- the goal-level "did this fix it?"
+    Yes/No signal, asked once after a plan has been shown and attempted.
+    Distinct from FeedbackRequest/POST /v1/feedback, which rates ONE
+    deeplink's match quality and can be answered before ever trying it;
+    this is about the outcome of the whole plan. See resolution.py for how
+    a "No" is fanned out into the existing per-deeplink feedback/avoidance
+    machinery rather than duplicating it."""
+    goal_title: str                          # the Goal.title this resolution is about
+    deeplinks: List[ResolutionDeeplink] = []  # every real deeplink this Goal's actions matched
+    resolved: bool                           # True = "yes, fixed", False = "no, still broken"
+    query: Optional[str] = None
+    session_id: Optional[str] = None
+
+
 class FeedbackRequest(BaseModel):
     """POST /v1/feedback -- thumbs up/down on one matched deeplink from a
     previous /v1/troubleshoot(/stream) response. Drives the adaptive

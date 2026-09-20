@@ -162,6 +162,55 @@ def test_feedback_records_and_rejects_placeholder(client):
     assert err["request_id"] == res2.headers["X-Request-ID"]
 
 
+def test_resolution_records_and_returns_request_id(client):
+    res = client.post("/v1/resolution", json={
+        "goal_title": "Battery fast drain",
+        "deeplinks": [{"deeplink": "bixby://masked/act/main-res-1", "action_name": "Battery Settings"}],
+        "resolved": True,
+    })
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "recorded"
+    assert body["request_id"] == res.headers["X-Request-ID"]
+    assert body["deeplinks_updated"] == ["bixby://masked/act/main-res-1"]
+
+
+def test_resolution_no_feeds_session_avoidance_end_to_end(client):
+    """Full stack, no monkeypatching: a "No" here must make the very next
+    /v1/troubleshoot call in the same session avoid re-suggesting this
+    deeplink -- mirrors the existing thumbs-down -> avoidance coverage for
+    POST /v1/feedback."""
+    res = client.post("/v1/resolution", json={
+        "goal_title": "Some goal",
+        "deeplinks": [{"deeplink": "bixby://masked/act/main-res-2", "action_name": "X"}],
+        "resolved": False,
+        "session_id": "sess-main-resolution",
+    })
+    assert res.status_code == 200
+
+    import session_memory
+    assert "bixby://masked/act/main-res-2" in session_memory.get_avoid_set("sess-main-resolution")
+
+
+def test_resolution_accepts_empty_deeplinks_list(client):
+    res = client.post("/v1/resolution", json={"goal_title": "No real match", "resolved": False})
+    assert res.status_code == 200
+    assert res.json()["deeplinks_updated"] == []
+
+
+def test_stats_includes_resolution_summary(client):
+    client.post("/v1/resolution", json={
+        "goal_title": "Stats check",
+        "deeplinks": [{"deeplink": "bixby://masked/act/main-res-stats", "action_name": "X"}],
+        "resolved": True,
+    })
+    res = client.get("/stats")
+    assert res.status_code == 200
+    body = res.json()
+    assert "resolution" in body
+    assert body["resolution"]["total_resolution_events"] >= 1
+
+
 class TestRateLimiting:
     def test_returns_429_with_retry_after_once_limit_exceeded(self, monkeypatch):
         monkeypatch.setattr(middleware.troubleshoot_limiter, "max_requests", 2)
