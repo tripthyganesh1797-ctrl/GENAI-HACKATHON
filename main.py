@@ -16,13 +16,17 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from schema import TroubleshootRequest, FeedbackRequest, BatchTroubleshootRequest, ReportRequest, ResolutionRequest
+from schema import (
+    TroubleshootRequest, FeedbackRequest, BatchTroubleshootRequest, ReportRequest,
+    ResolutionRequest, InvestigateStartRequest, InvestigateAnswerRequest,
+)
 
 from pipeline import run_pipeline, run_pipeline_streaming, llm_available
 from request_log import compute_stats
 from deeplink_matching import get_index, DUMMY_POSITIVE_DEEPLINK
 import feedback as feedback_module
 import resolution as resolution_module
+import investigator as investigator_module
 from report import generate_report, SUPPORTED_FORMATS
 from middleware import (
     RequestIDMiddleware, RateLimitMiddleware, error_body,
@@ -61,6 +65,10 @@ app.add_middleware(
         "/v1/troubleshoot/batch": batch_limiter,   # longest-prefix-wins over the line above
         "/v1/feedback": feedback_limiter,
         "/v1/resolution": feedback_limiter,  # same cheap-write shape as /v1/feedback
+        # /v1/investigate/answer can end up calling run_pipeline() (see
+        # investigator.py's _resolve()) exactly like /v1/troubleshoot does,
+        # so it shares that limiter rather than the cheaper feedback one.
+        "/v1/investigate": troubleshoot_limiter,
     },
 )
 app.add_middleware(RequestIDMiddleware)
@@ -253,6 +261,48 @@ def submit_resolution(payload: ResolutionRequest, request: Request):
     return {"status": "recorded", "request_id": request.state.request_id, **result}
 
 
+@app.post("/v1/investigate/start")
+def investigate_start(payload: InvestigateStartRequest, request: Request):
+    """SIA-inspired interactive diagnosis (investigator.py): begins a short
+    Q&A that narrows down WHICH of several candidate root causes is likely
+    correct before running the normal troubleshooting pipeline against it,
+    instead of committing to the engine's single first guess. Returns
+    either the first targeted question (status "in_progress") or, when the
+    initial evidence is already unambiguous enough (or there's genuinely
+    only one candidate), an immediately resolved result -- either way the
+    response shape is the same, see investigator.py's _public_view()."""
+    result = investigator_module.start_investigation(payload.complaint, session_id=payload.session_id)
+    return {"request_id": request.state.request_id, **result}
+
+
+@app.post("/v1/investigate/answer")
+def investigate_answer(payload: InvestigateAnswerRequest, request: Request):
+    """Submits an answer to the most recent question from
+    /v1/investigate/start (or a previous call here), updates the
+    hypothesis probabilities, and either asks another targeted question or
+    resolves the investigation and returns a real troubleshooting plan for
+    the winning hypothesis (see investigator.py's _resolve(), which runs
+    the SAME run_pipeline() every other endpoint uses)."""
+    result = investigator_module.answer_investigation(payload.investigation_id, payload.answer)
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No investigation found with id {payload.investigation_id!r} -- "
+                   f"it may have expired (this process restarted) or never existed.",
+        )
+    return {"request_id": request.state.request_id, **result}
+
+
+@app.get("/v1/investigate/{investigation_id}")
+def investigate_get(investigation_id: str, request: Request):
+    """Read-only poll of an investigation's current state -- no side
+    effects, unlike the two routes above."""
+    result = investigator_module.get_investigation(investigation_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"No investigation found with id {investigation_id!r}.")
+    return {"request_id": request.state.request_id, **result}
+
+
 @app.post("/v1/report")
 def report(payload: ReportRequest, request: Request):
     """Task 38: packages an already-computed /v1/troubleshoot(/stream)
@@ -288,4 +338,5 @@ def stats():
         **compute_stats(),
         "feedback": feedback_module.feedback_summary(),
         "resolution": resolution_module.resolution_summary(),
+        "investigations": investigator_module.investigation_stats(),
     }

@@ -35,6 +35,9 @@ from clarify import detect_vague_complaint, build_clarifying_question, CLARIFYIN
 from answer_source import classify_answer_source
 from related_issues import suggest_related_issues
 from image_analysis import describe_image, NO_IMAGE_ANALYSIS
+from ambiguity import refine_needs_clarification
+import recovery
+from topic_manager import update_topic_stack
 import offline_fallback
 
 _PLACEHOLDER_KEYS = {None, "", "your_key_here"}
@@ -162,11 +165,11 @@ def _format_device_context_block(device: Optional[dict]) -> str:
 
 def stage1_extract(technical_query: str, siis_response: str = "",
                     force_offline: bool = False, device: Optional[dict] = None,
-                    avoid_deeplinks=None) -> tuple[dict, bool]:
-    """Returns (result, used_fallback). `device` (Task 35) is only used to
-    enrich the LLM prompt here -- the offline path ignores it entirely,
-    and either way the actual device-aware reordering/notes happen once,
-    uniformly, in run_pipeline()/run_pipeline_streaming() via
+                    avoid_deeplinks=None) -> tuple[dict, bool, dict]:
+    """Returns (result, used_fallback, recovery_info). `device` (Task 35) is
+    only used to enrich the LLM prompt here -- the offline path ignores it
+    entirely, and either way the actual device-aware reordering/notes
+    happen once, uniformly, in run_pipeline()/run_pipeline_streaming() via
     apply_device_context() -- see device_signals.py for why that's done
     centrally instead of inside each path separately.
 
@@ -175,23 +178,50 @@ def stage1_extract(technical_query: str, siis_response: str = "",
     that in code, see enrich_with_deeplinks()), so there's nothing to pass
     into the LLM prompt for it -- it only matters on the offline path,
     where offline_extract() resolves deeplinks directly while building
-    each Goal's actions."""
+    each Goal's actions.
+
+    `recovery_info` (recovery.py, Guided-Retry inspired) is recovery.
+    NO_RECOVERY for the common cases (no LLM configured, or the first
+    attempt just worked) or a dict describing an LLM-call failure and
+    whether one structured guided-retry attempt recovered it before
+    falling through to the offline path. See recovery.py's module
+    docstring for the full rationale and why this deliberately does NOT
+    retry a legitimate empty-contexts result."""
     if not force_offline and llm_available():
         topic = _guess_topic(technical_query)
+        base_prompt = STAGE1_EXTRACTION_PROMPT.format(
+            technical_query=technical_query,
+            siis_response=siis_response or "(no reference text provided)",
+            topic=topic,
+            device_context_block=_format_device_context_block(device),
+        )
         try:
-            prompt = STAGE1_EXTRACTION_PROMPT.format(
-                technical_query=technical_query,
-                siis_response=siis_response or "(no reference text provided)",
-                topic=topic,
-                device_context_block=_format_device_context_block(device),
-            )
-            result = call_llm_json(prompt, max_tokens=4000)
+            result = call_llm_json(base_prompt, max_tokens=4000)
             if "contexts" in result:
-                return result, False
-        except Exception:
-            pass  # fall through to offline path
+                return result, False, dict(recovery.NO_RECOVERY)
+        except Exception as e:
+            failure = recovery.classify_llm_failure(True, e)
+            # Guided-Retry: one explicit, structured retry with a recovery
+            # instruction appended to the SAME prompt -- distinct from
+            # call_llm_json()'s own internal retries=2, which only retries
+            # raw JSON-parse noise on a byte-identical prompt. This is a
+            # higher-level retry after THAT has already been exhausted.
+            try:
+                retry_prompt = base_prompt + recovery.build_guided_retry_suffix(failure["failure_type"])
+                result = call_llm_json(retry_prompt, max_tokens=4000, retries=1)
+                if "contexts" in result:
+                    failure["guided_retry_attempted"] = True
+                    failure["guided_retry_succeeded"] = True
+                    return result, False, failure
+            except Exception:
+                pass  # guided retry also failed -- fall through to offline
+            failure["guided_retry_attempted"] = True
+            failure["guided_retry_succeeded"] = False
+            return offline_fallback.offline_extract(
+                technical_query, siis_response, avoid_deeplinks=avoid_deeplinks,
+            ), True, failure
     return offline_fallback.offline_extract(technical_query, siis_response,
-                                             avoid_deeplinks=avoid_deeplinks), True
+                                             avoid_deeplinks=avoid_deeplinks), True, dict(recovery.NO_RECOVERY)
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +369,16 @@ def _build_safety_response(raw_complaint: str, hazard_reason: str, start: float)
             "needs_clarification": False,
             "clarifying_question": None,
             "clarifying_topic_options": [],
+            # A hazard short-circuit never reaches the ambiguity check or
+            # Stage 1, so there's nothing for either signal to report --
+            # None/NO_RECOVERY rather than omitting the keys, so callers
+            # never have to special-case the safety response shape.
+            "ambiguity": None,
+            "recovery": dict(recovery.NO_RECOVERY),
+            # Deliberately always None here, even with an active session --
+            # a physical-hazard interrupt isn't a "topic" a user would want
+            # topic_manager.py to push/resume; it doesn't touch the stack.
+            "topic_stack": None,
             "answer_source": classify_answer_source(
                 safety_alert=True, used_offline_fallback=False,
                 used_builtin_reference=False, siis_response_provided=False,
@@ -396,7 +436,14 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
     # technical_query, and not dependent on cache/Stage0/1 at all) so it's
     # cheap, always available, and applies identically whether this
     # request is served from cache or extracted fresh below.
-    needs_clarification = detect_vague_complaint(effective_complaint)
+    heuristic_needs_clarification = detect_vague_complaint(effective_complaint)
+    # ambiguity.py (CLAM-inspired): only ever RAISES the heuristic's verdict,
+    # never lowers it -- see ambiguity.py's module docstring for why. A
+    # complete no-op (ambiguity_info stays None) whenever no LLM is
+    # configured, so this can never change offline/gate-G3 behavior.
+    needs_clarification, ambiguity_info = refine_needs_clarification(
+        heuristic_needs_clarification, effective_complaint
+    )
     clarifying_question = build_clarifying_question(effective_complaint) if needs_clarification else None
 
     # Task 36: which deeplinks (if any) THIS session already tried and
@@ -445,6 +492,21 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
         cached["meta"]["needs_clarification"] = needs_clarification
         cached["meta"]["clarifying_question"] = clarifying_question
         cached["meta"]["clarifying_topic_options"] = CLARIFYING_TOPIC_OPTIONS if needs_clarification else []
+        # ambiguity.py: same "request-specific, recompute fresh" reasoning
+        # as needs_clarification -- this request's own complaint wording,
+        # not anything about the cache slot it happened to land on.
+        cached["meta"]["ambiguity"] = ambiguity_info
+        # topic_manager.py (DiagGPT-inspired): also request/session-specific
+        # -- recorded fresh on every request, same as session_notes below,
+        # never baked into the cached base plan.
+        cached["meta"]["topic_stack"] = update_topic_stack(
+            session_id, _guess_issue_phrase(technical_query)
+        )
+        # recovery.py (Guided-Retry inspired) DOES reflect how the cached
+        # plan was actually produced, so it's baked in at cache-write time
+        # like answer_source/related_possibilities below -- .setdefault()
+        # backfills a cache entry written before this field existed.
+        cached["meta"].setdefault("recovery", dict(recovery.NO_RECOVERY))
         # Same "request-specific, recompute fresh" treatment as
         # needs_clarification above: whether THIS request attached a photo
         # (and what it showed) has nothing to do with which cache slot the
@@ -485,8 +547,8 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
         return cached
 
     # Stage 1
-    extraction, fb1 = stage1_extract(technical_query, siis_response, device=device,
-                                      avoid_deeplinks=avoid_deeplinks)
+    extraction, fb1, recovery_info = stage1_extract(technical_query, siis_response, device=device,
+                                                      avoid_deeplinks=avoid_deeplinks)
     used_fallback_any = used_fallback_any or fb1
     if not fb1:
         total_prompt_tokens += LAST_USAGE["prompt_tokens"]
@@ -535,6 +597,15 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
             "needs_clarification": needs_clarification,
             "clarifying_question": clarifying_question,
             "clarifying_topic_options": CLARIFYING_TOPIC_OPTIONS if needs_clarification else [],
+            # ambiguity.py (CLAM-inspired): the LLM-based signal that fed
+            # into needs_clarification above, surfaced honestly (None
+            # whenever no LLM was available to compute it).
+            "ambiguity": ambiguity_info,
+            # recovery.py (Guided-Retry inspired): whether Stage 1's LLM
+            # call failed and, if so, whether the structured guided-retry
+            # attempt recovered it before falling through to the offline
+            # path. recovery.NO_RECOVERY for the common no-failure case.
+            "recovery": recovery_info,
             # Computed once here, not request-specific (unlike device/session
             # notes below) -- flows through untouched on a cache hit exactly
             # like used_offline_fallback/used_builtin_reference already do.
@@ -568,6 +639,10 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
 
     response["meta"]["device_context_notes"] = apply_device_context(contexts, device)
     response["meta"]["session_notes"] = _summarize_session_avoidance(contexts)
+    # topic_manager.py (DiagGPT-inspired): session-scoped, recomputed fresh
+    # on every request -- see the cache-hit branch above for why this is
+    # never baked into the cached base plan either.
+    response["meta"]["topic_stack"] = update_topic_stack(session_id, _guess_issue_phrase(technical_query))
 
     append_log({
         "domain_guess": _guess_topic(technical_query),
@@ -603,7 +678,16 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
     and a base64-encoded photo is far too large for a URL query string.
     Every meta dict below still carries image_analysis, fixed at
     NO_IMAGE_ANALYSIS, so a caller reading meta.image_analysis.provided
-    never has to special-case which endpoint it called."""
+    never has to special-case which endpoint it called.
+
+    Also deliberately skips ambiguity.py's LLM-based ambiguity refinement
+    (meta.ambiguity is always None here) -- that's an extra LLM round trip
+    before the "clarify" stage event could even be emitted, which would
+    either delay the first event or require restructuring the stage
+    ordering for a purely additive confidence signal. meta.needs_clarification
+    still reflects clarify.py's zero-cost heuristic exactly as before.
+    recovery.py and topic_manager.py ARE fully wired here -- both are cheap
+    (no extra LLM call, or one that Stage 1 already had to make anyway)."""
     start = time.time()
     total_prompt_tokens = 0
     total_completion_tokens = 0
@@ -664,6 +748,13 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
             cached["meta"]["needs_clarification"] = needs_clarification
             cached["meta"]["clarifying_question"] = clarifying_question
             cached["meta"]["clarifying_topic_options"] = CLARIFYING_TOPIC_OPTIONS if needs_clarification else []
+            # ambiguity.py deliberately NOT run on the streaming path (see
+            # run_pipeline_streaming()'s docstring) -- always None here.
+            cached["meta"]["ambiguity"] = None
+            cached["meta"]["topic_stack"] = update_topic_stack(
+                session_id, _guess_issue_phrase(technical_query)
+            )
+            cached["meta"].setdefault("recovery", dict(recovery.NO_RECOVERY))
             cached["meta"].setdefault("answer_source", classify_answer_source(
                 safety_alert=False,
                 used_offline_fallback=cached["meta"].get("used_offline_fallback", False),
@@ -692,8 +783,8 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
 
         # Stage 1
         yield {"stage": "extract", "status": "running"}
-        extraction, fb1 = stage1_extract(technical_query, siis_response, device=device,
-                                          avoid_deeplinks=avoid_deeplinks)
+        extraction, fb1, recovery_info = stage1_extract(technical_query, siis_response, device=device,
+                                                          avoid_deeplinks=avoid_deeplinks)
         used_fallback_any = used_fallback_any or fb1
         if not fb1:
             total_prompt_tokens += LAST_USAGE["prompt_tokens"]
@@ -751,6 +842,10 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
                 "needs_clarification": needs_clarification,
                 "clarifying_question": clarifying_question,
                 "clarifying_topic_options": CLARIFYING_TOPIC_OPTIONS if needs_clarification else [],
+                # ambiguity.py deliberately NOT run on the streaming path --
+                # see this function's docstring.
+                "ambiguity": None,
+                "recovery": recovery_info,
                 "answer_source": classify_answer_source(
                     safety_alert=False, used_offline_fallback=used_fallback_any,
                     used_builtin_reference=extraction.get("used_builtin_reference", False),
@@ -768,6 +863,7 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
 
         response["meta"]["device_context_notes"] = apply_device_context(contexts, device)
         response["meta"]["session_notes"] = _summarize_session_avoidance(contexts)
+        response["meta"]["topic_stack"] = update_topic_stack(session_id, _guess_issue_phrase(technical_query))
 
         append_log({
             "domain_guess": _guess_topic(technical_query),

@@ -118,7 +118,7 @@ class TestCacheHitRecomputesImageAnalysisFresh:
                 "score": 0.9,
                 "actions": [],
             }
-            return {"contexts": [goal]}, True  # a real match, so it actually gets cached
+            return {"contexts": [goal]}, True, {"failure_detected": False, "failure_type": None, "detail": None, "guided_retry_attempted": False, "guided_retry_succeeded": None}  # a real match, so it actually gets cached
 
         monkeypatch.setattr(pipeline, "describe_image", fake_describe_image)
         monkeypatch.setattr(pipeline, "stage0_enrich", fake_stage0)

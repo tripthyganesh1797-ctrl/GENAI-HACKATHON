@@ -31,6 +31,8 @@ def _isolated_state_files(tmp_path, monkeypatch):
     import session_memory
     import resolution
     import middleware
+    import topic_manager
+    import investigator
 
     monkeypatch.setattr(cache, "CACHE_FILE", str(tmp_path / "cache_store.json"))
     monkeypatch.setattr(request_log, "LOG_FILE", str(tmp_path / "request_log.jsonl"))
@@ -41,6 +43,12 @@ def _isolated_state_files(tmp_path, monkeypatch):
                          tmp_path / "session_tried_unhelpful.json")
     monkeypatch.setattr(session_memory, "_cache", None)
     monkeypatch.setattr(resolution, "RESOLUTION_LOG_PATH", tmp_path / "resolution_log.jsonl")
+    monkeypatch.setattr(topic_manager, "TOPIC_STACK_PATH", tmp_path / "session_topic_stack.json")
+    monkeypatch.setattr(topic_manager, "_cache", None)
+    # investigator.py's _STORE is in-process-only BY DESIGN (see its module
+    # docstring) -- there's no file to redirect, just a module-level dict to
+    # clear so one test's investigations can't leak into another's.
+    investigator._STORE.clear()
     # The rate limiters in middleware.py are process-wide singletons (by
     # design -- they track real client traffic across the app's lifetime),
     # so reset them between tests or an earlier test's requests could trip
@@ -51,6 +59,8 @@ def _isolated_state_files(tmp_path, monkeypatch):
     yield
     monkeypatch.setattr(feedback, "_scores_cache", None)
     monkeypatch.setattr(session_memory, "_cache", None)
+    monkeypatch.setattr(topic_manager, "_cache", None)
+    investigator._STORE.clear()
 
 
 @pytest.fixture(scope="session")

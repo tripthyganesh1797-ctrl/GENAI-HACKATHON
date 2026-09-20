@@ -111,7 +111,7 @@ class TestEscalation:
                 "score": 0.35,
                 "actions": [],
             }
-            return {"contexts": [goal]}, False  # fb1=False -> "LLM path" for this test
+            return {"contexts": [goal]}, False, {"failure_detected": False, "failure_type": None, "detail": None, "guided_retry_attempted": False, "guided_retry_succeeded": None}  # fb1=False -> "LLM path" for this test
 
         monkeypatch.setattr(pipeline, "stage1_extract", fake_stage1)
         result = pipeline.run_pipeline("some complaint", "some grounding text")
@@ -127,7 +127,7 @@ class TestEscalation:
                 "score": 0.95,
                 "actions": [],
             }
-            return {"contexts": [goal]}, False
+            return {"contexts": [goal]}, False, {"failure_detected": False, "failure_type": None, "detail": None, "guided_retry_attempted": False, "guided_retry_succeeded": None}
 
         monkeypatch.setattr(pipeline, "stage1_extract", fake_stage1)
         result = pipeline.run_pipeline("some other complaint", "some grounding text")
@@ -263,7 +263,7 @@ class TestDeviceContext:
                      "stepGroups": [{"steps": ["Tap Battery."]}]},
                 ],
             }
-            return {"contexts": [goal]}, False
+            return {"contexts": [goal]}, False, {"failure_detected": False, "failure_type": None, "detail": None, "guided_retry_attempted": False, "guided_retry_succeeded": None}
 
         monkeypatch.setattr(pipeline, "stage1_extract", fake_stage1)
         result = pipeline.run_pipeline("battery complaint", "grounding text",
@@ -498,7 +498,7 @@ class TestStreamingParity:
                 "score": 0.3,
                 "actions": [],
             }
-            return {"contexts": [goal]}, False
+            return {"contexts": [goal]}, False, {"failure_detected": False, "failure_type": None, "detail": None, "guided_retry_attempted": False, "guided_retry_succeeded": None}
 
         monkeypatch.setattr(pipeline, "stage1_extract", fake_stage1)
         events = list(pipeline.run_pipeline_streaming("some complaint", "some grounding text"))

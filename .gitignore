@@ -6,6 +6,9 @@ cache_store.json
 request_log.jsonl
 feedback_log.jsonl
 feedback_scores.json
+session_tried_unhelpful.json
+resolution_log.jsonl
+session_topic_stack.json
 .DS_Store
 .pytest_cache/
 .coverage

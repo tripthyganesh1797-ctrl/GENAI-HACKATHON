@@ -168,6 +168,21 @@ class Meta(BaseModel):
     # `reason` explains an honest degrade (no key, non-vision model, a
     # failed call) whenever provided=True but analyzed=False.
     image_analysis: Optional[Dict] = None
+    # ambiguity.py (CLAM-inspired) -- {"ambiguous", "confidence", "reason",
+    # "method": "llm"} when an LLM was available to compute a second
+    # opinion on clarify.py's heuristic verdict, else None. Never lowers
+    # needs_clarification, only ever able to raise it -- see the module.
+    ambiguity: Optional[Dict] = None
+    # recovery.py (Guided-Retry inspired, "When the Database Fails") --
+    # whether Stage 1's LLM call failed and, if so, whether one structured
+    # guided-retry attempt recovered it before falling through to the
+    # offline path. recovery.NO_RECOVERY-shaped for the common no-failure
+    # case, never absent.
+    recovery: Optional[Dict] = None
+    # topic_manager.py (DiagGPT-inspired) -- session-scoped topic-stack
+    # tracking: {"action", "current_topic", "stack"}, or None for no
+    # session_id / a hazard short-circuit (see topic_manager.py).
+    topic_stack: Optional[Dict] = None
 
 
 class TroubleshootResponse(BaseModel):
@@ -231,6 +246,26 @@ class ResolutionRequest(BaseModel):
     resolved: bool                           # True = "yes, fixed", False = "no, still broken"
     query: Optional[str] = None
     session_id: Optional[str] = None
+
+
+class InvestigateStartRequest(BaseModel):
+    """POST /v1/investigate/start -- begins an SIA-inspired interactive
+    diagnosis (investigator.py): instead of committing to the engine's
+    first guess, ask a short sequence of targeted questions to narrow down
+    which of several candidate root causes is actually correct before
+    running the normal troubleshooting pipeline. Entirely opt-in -- a
+    caller that never calls this endpoint sees no behavior change
+    whatsoever anywhere else in the service."""
+    complaint: str
+    session_id: Optional[str] = None
+
+
+class InvestigateAnswerRequest(BaseModel):
+    """POST /v1/investigate/answer -- submits the user's free-text answer
+    to the most recent question from POST /v1/investigate/start (or a
+    previous call to this same endpoint). See investigator.py."""
+    investigation_id: str
+    answer: str
 
 
 class FeedbackRequest(BaseModel):

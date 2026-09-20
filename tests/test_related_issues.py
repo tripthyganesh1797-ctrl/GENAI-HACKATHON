@@ -53,7 +53,7 @@ class TestPipelineIntegration:
                 "score": 0.35,
                 "actions": [],
             }
-            return {"contexts": [goal]}, False  # fb1=False -> LLM path
+            return {"contexts": [goal]}, False, {"failure_detected": False, "failure_type": None, "detail": None, "guided_retry_attempted": False, "guided_retry_succeeded": None}  # fb1=False -> LLM path
 
         monkeypatch.setattr(pipeline, "stage1_extract", fake_stage1)
         result = pipeline.run_pipeline("my battery drains so fast", "some grounding text")
@@ -69,7 +69,7 @@ class TestPipelineIntegration:
                 "score": 0.95,
                 "actions": [],
             }
-            return {"contexts": [goal]}, False
+            return {"contexts": [goal]}, False, {"failure_detected": False, "failure_type": None, "detail": None, "guided_retry_attempted": False, "guided_retry_succeeded": None}
 
         monkeypatch.setattr(pipeline, "stage1_extract", fake_stage1)
         result = pipeline.run_pipeline("my battery is fine actually", "some grounding text")
@@ -93,7 +93,7 @@ class TestPipelineIntegration:
                 "score": 0.35,
                 "actions": [],
             }
-            return {"contexts": [goal]}, False
+            return {"contexts": [goal]}, False, {"failure_detected": False, "failure_type": None, "detail": None, "guided_retry_attempted": False, "guided_retry_succeeded": None}
 
         monkeypatch.setattr(pipeline, "stage1_extract", fake_stage1)
         events = list(pipeline.run_pipeline_streaming("my battery drains so fast, streaming", "grounding text"))
@@ -111,7 +111,7 @@ class TestPipelineIntegration:
                 "score": 0.35,
                 "actions": [],
             }
-            return {"contexts": [goal]}, False
+            return {"contexts": [goal]}, False, {"failure_detected": False, "failure_type": None, "detail": None, "guided_retry_attempted": False, "guided_retry_succeeded": None}
 
         monkeypatch.setattr(pipeline, "stage1_extract", fake_stage1)
         complaint = "my battery drains so fast, cache backfill test"

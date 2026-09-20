@@ -603,3 +603,65 @@ class TestReportEndpoint:
         client.post("/v1/report", json={"result": first.json()})
         count_after = len(request_log.read_all_logs())
         assert count_after == count_before
+
+
+class TestInvestigateEndpoints:
+    """POST /v1/investigate/start, POST /v1/investigate/answer,
+    GET /v1/investigate/{id} -- investigator.py's SIA-inspired multi-turn
+    diagnosis loop, exercised through the real HTTP routes (no
+    monkeypatching -- the whole suite runs offline, same as the rest of
+    this file's full-stack tests)."""
+
+    def test_start_returns_first_question_and_request_id(self, client):
+        res = client.post("/v1/investigate/start", json={"complaint": "my battery drains really fast"})
+        assert res.status_code == 200
+        body = res.json()
+        assert body["request_id"] == res.headers["X-Request-ID"]
+        assert body["status"] == "in_progress"
+        assert body["question"]
+        assert len(body["hypotheses"]) >= 2
+        assert body["investigation_id"]
+
+    def test_full_round_trip_to_resolution(self, client):
+        start = client.post("/v1/investigate/start", json={"complaint": "my battery drains really fast"}).json()
+        inv_id = start["investigation_id"]
+        result = None
+        for answer in ["it happens every time", "no clear trigger", "restarting didn't help"]:
+            res = client.post("/v1/investigate/answer", json={"investigation_id": inv_id, "answer": answer})
+            assert res.status_code == 200
+            result = res.json()
+        assert result["status"] == "resolved"
+        assert result["final_result"]["response"]["contexts"] is not None
+        assert "meta" in result["final_result"]
+
+    def test_answer_on_unknown_investigation_id_is_a_structured_404(self, client):
+        res = client.post("/v1/investigate/answer", json={"investigation_id": "nope", "answer": "x"})
+        assert res.status_code == 404
+        err = res.json()["error"]
+        assert err["request_id"] == res.headers["X-Request-ID"]
+
+    def test_get_on_unknown_investigation_id_is_a_structured_404(self, client):
+        res = client.get("/v1/investigate/nope")
+        assert res.status_code == 404
+
+    def test_get_polls_state_without_advancing_it(self, client):
+        start = client.post("/v1/investigate/start", json={"complaint": "my battery drains really fast"}).json()
+        inv_id = start["investigation_id"]
+        first = client.get(f"/v1/investigate/{inv_id}").json()
+        second = client.get(f"/v1/investigate/{inv_id}").json()
+        assert first["questions_asked"] == second["questions_asked"] == 0
+        assert first["question"] == start["question"]
+
+    def test_start_forwards_session_id(self, client):
+        res = client.post(
+            "/v1/investigate/start",
+            json={"complaint": "my battery drains really fast", "session_id": "investigate-sess-1"},
+        )
+        assert res.status_code == 200
+
+    def test_stats_includes_investigations_section(self, client):
+        client.post("/v1/investigate/start", json={"complaint": "my battery drains really fast, stats test"})
+        res = client.get("/stats")
+        assert res.status_code == 200
+        assert "investigations" in res.json()
+        assert res.json()["investigations"]["total_investigations"] >= 1

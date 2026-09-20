@@ -4,7 +4,8 @@ from pydantic import ValidationError
 
 from schema import (
     Action, ActionCategory, BatchTroubleshootRequest, DeviceContext, EscalationAction,
-    EscalationRecommendation, FeedbackRequest, Goal, Meta, ReportRequest, ResolutionDeeplink,
+    EscalationRecommendation, FeedbackRequest, Goal, InvestigateAnswerRequest,
+    InvestigateStartRequest, Meta, ReportRequest, ResolutionDeeplink,
     ResolutionRequest, StepGroup, TroubleshootRequest,
 )
 
@@ -191,3 +192,45 @@ def test_report_request_requires_result_and_defaults_format():
 def test_report_request_accepts_explicit_format():
     req = ReportRequest(result={"query": "x"}, format="html")
     assert req.format == "html"
+
+
+def test_meta_accepts_the_new_ambiguity_recovery_topic_stack_fields():
+    meta = Meta(
+        latency_ms=1.0, cache_hit=False, model="x", cost_usd=0.0,
+        ambiguity={"ambiguous": True, "confidence": 0.8, "reason": "vague", "method": "llm"},
+        recovery={"failure_detected": False, "failure_type": None, "detail": None,
+                  "guided_retry_attempted": False, "guided_retry_succeeded": None},
+        topic_stack={"action": "create_a_new_topic", "current_topic": "Battery draining fast",
+                     "stack": ["Battery draining fast"]},
+    )
+    assert meta.ambiguity["method"] == "llm"
+    assert meta.topic_stack["current_topic"] == "Battery draining fast"
+
+
+def test_meta_new_fields_default_to_none():
+    meta = Meta(latency_ms=1.0, cache_hit=False, model="x", cost_usd=0.0)
+    assert meta.ambiguity is None
+    assert meta.recovery is None
+    assert meta.topic_stack is None
+
+
+def test_investigate_start_request_requires_complaint():
+    with pytest.raises(ValidationError):
+        InvestigateStartRequest()
+    req = InvestigateStartRequest(complaint="my battery drains fast")
+    assert req.session_id is None
+
+
+def test_investigate_start_request_accepts_session_id():
+    req = InvestigateStartRequest(complaint="my battery drains fast", session_id="abc-123")
+    assert req.session_id == "abc-123"
+
+
+def test_investigate_answer_request_requires_id_and_answer():
+    with pytest.raises(ValidationError):
+        InvestigateAnswerRequest(investigation_id="abc")
+    with pytest.raises(ValidationError):
+        InvestigateAnswerRequest(answer="it happens every time")
+    req = InvestigateAnswerRequest(investigation_id="abc", answer="it happens every time")
+    assert req.investigation_id == "abc"
+    assert req.answer == "it happens every time"

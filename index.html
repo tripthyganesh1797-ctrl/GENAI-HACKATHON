@@ -620,7 +620,8 @@ async function runDiagnosis() {
                    data.meta?.safety_reason || null, data.meta?.needs_clarification || false,
                    data.meta?.clarifying_question || null, data.meta?.clarifying_topic_options || [],
                    data.meta?.answer_source || null, data.meta?.related_possibilities || [],
-                   data.meta?.image_analysis || null);
+                   data.meta?.image_analysis || null, data.meta?.topic_stack || null,
+                   data.meta?.recovery || null);
 
   } catch (err) {
     setApiOnline(false);
@@ -955,13 +956,51 @@ function relatedPossibilitiesBanner(relatedPossibilities) {
   `;
 }
 
-function renderContexts(contexts, query, deviceContextNotes = [], sessionNotes = [], safetyAlert = false, safetyReason = null, needsClarification = false, clarifyingQuestion = null, clarifyingTopicOptions = [], answerSource = null, relatedPossibilities = [], imageAnalysis = null) {
+// topic_manager.py (DiagGPT-inspired): a small, unobtrusive chip trail
+// showing this session's topic stack (most-recent first) -- only rendered
+// with an active session AND more than one topic tracked so far, since a
+// single-topic stack ("you're talking about the thing you just typed") adds
+// no information a first-time user doesn't already know.
+function topicStackBanner(topicStack) {
+  if (!topicStack || !topicStack.stack || topicStack.stack.length < 2) return '';
+  const chips = topicStack.stack.map((t, i) => `
+    <span class="text-xs font-mono px-2 py-0.5 rounded-md border ${i === 0 ? 'border-violet/50 text-violet bg-violet/10' : 'border-line text-inkdim'}">${escapeHtml(t)}</span>
+  `).join('<span class="text-inkdim text-xs">&larr;</span>');
+  return `
+    <div class="mb-5 flex flex-wrap items-center gap-1.5 fade-up">
+      <span class="text-inkdim text-xs font-mono mr-1">This session:</span>${chips}
+    </div>
+  `;
+}
+
+// recovery.py (Guided-Retry inspired): only ever visible when Stage 1
+// actually failed once -- the common, healthy case (recovery.NO_RECOVERY)
+// renders nothing at all, same "silent unless there's something to say"
+// rule as deviceContextNotesBanner()/sessionNotesBanner().
+function recoveryBanner(recovery) {
+  if (!recovery || !recovery.failure_detected) return '';
+  const recovered = recovery.guided_retry_succeeded;
+  return `
+    <div class="mb-5 bg-surface/40 border border-line rounded-xl px-4 py-3 fade-up">
+      <p class="text-inkdim text-xs">
+        &#128260; ${recovered
+          ? 'The AI model failed once on this request -- an automatic guided retry recovered it, so this is still a real AI-generated answer.'
+          : 'The AI model failed and a guided retry also failed, so this answer came from the offline knowledge base instead.'}
+      </p>
+    </div>
+  `;
+}
+
+function renderContexts(contexts, query, deviceContextNotes = [], sessionNotes = [], safetyAlert = false, safetyReason = null, needsClarification = false, clarifyingQuestion = null, clarifyingTopicOptions = [], answerSource = null, relatedPossibilities = [], imageAnalysis = null, topicStack = null, recovery = null) {
   const notesHtml = safetyBanner(safetyAlert, safetyReason) +
                      imageAnalysisBanner(imageAnalysis) +
                      clarifyBanner(needsClarification, clarifyingQuestion, clarifyingTopicOptions) +
                      sourceDisclosure(answerSource) +
                      relatedPossibilitiesBanner(relatedPossibilities) +
-                     deviceContextNotesBanner(deviceContextNotes) + sessionNotesBanner(sessionNotes);
+                     recoveryBanner(recovery) +
+                     topicStackBanner(topicStack) +
+                     deviceContextNotesBanner(deviceContextNotes) + sessionNotesBanner(sessionNotes) +
+                     investigateBar(query);
   if (!contexts || contexts.length === 0) {
     resultContainer.innerHTML = `
       ${notesHtml}
@@ -1108,6 +1147,147 @@ async function submitResolution(wid, resolved) {
     statusEl.textContent = 'failed to send';
     el.querySelectorAll('.resolution-btn').forEach(b => b.disabled = false);
   }
+}
+
+// investigator.py (SIA-inspired): an opt-in, short Q&A that narrows down
+// WHICH of several candidate root causes is likely correct before running
+// the normal pipeline against it, instead of settling for the engine's
+// single first guess. Deliberately a self-contained widget the user
+// chooses to open (not shown automatically) -- the plan above is already a
+// complete, real answer on its own; this is for "I'm not sure that's
+// actually it" moments. Same window-stashed-payload pattern as
+// resolutionWidget()/feedbackWidget() above.
+let _investigateSeq = 0;
+
+function investigateBar(query) {
+  const wid = `inv-${++_investigateSeq}`;
+  window[`__inv_${wid}`] = { query };
+  return `
+    <div id="${wid}" class="mb-5 fade-up">
+      <button onclick="startInvestigation('${wid}')"
+        class="investigate-start-btn text-xs font-mono px-3 py-1.5 rounded-lg border border-violet/40 text-violet hover:bg-violet/10 transition-colors">
+        &#128269; Not sure this is right? Run a guided diagnosis
+      </button>
+      <div class="investigate-panel mt-3"></div>
+    </div>
+  `;
+}
+
+async function startInvestigation(wid) {
+  const el = document.getElementById(wid);
+  if (!el) return;
+  const payload = window[`__inv_${wid}`];
+  const btn = el.querySelector('.investigate-start-btn');
+  const panel = el.querySelector('.investigate-panel');
+  btn.disabled = true;
+  btn.classList.add('opacity-50');
+  panel.innerHTML = `<p class="text-inkdim text-xs font-mono">starting…</p>`;
+  try {
+    const res = await fetch(`${API_BASE}/v1/investigate/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ complaint: payload.query, session_id: SESSION_ID }),
+    });
+    if (!res.ok) throw new Error(`${res.status}`);
+    renderInvestigationState(wid, await res.json());
+  } catch (err) {
+    panel.innerHTML = `<p class="text-red text-xs">Couldn't start the guided diagnosis. Is the backend reachable?</p>`;
+    btn.disabled = false;
+    btn.classList.remove('opacity-50');
+  }
+}
+
+// Renders EITHER the next targeted question + current hypothesis
+// probabilities (status "in_progress"), or the resolved diagnosis with a
+// button to pull up the real troubleshooting plan for the winning
+// hypothesis (status "resolved") -- see investigator.py's _public_view().
+function renderInvestigationState(wid, data) {
+  const el = document.getElementById(wid);
+  if (!el) return;
+  const stash = window[`__inv_${wid}`];
+  stash.investigationId = data.investigation_id;
+
+  const hypLines = (data.hypotheses || []).map(h => {
+    const isWinner = data.status === 'resolved' && h.label === data.winning_hypothesis;
+    return `
+      <div class="flex items-center justify-between text-xs">
+        <span class="${isWinner ? 'text-violet font-semibold' : 'text-inkdim'}">${escapeHtml(h.label)}</span>
+        <span class="font-mono ${isWinner ? 'text-violet' : 'text-inkdim'}">${Math.round(h.probability * 100)}%</span>
+      </div>
+    `;
+  }).join('');
+
+  const panel = el.querySelector('.investigate-panel');
+
+  if (data.status === 'resolved') {
+    stash.finalResult = data.final_result;
+    panel.innerHTML = `
+      <div class="bg-violet/10 border border-violet/40 rounded-xl px-4 py-3.5">
+        <p class="text-violet font-display font-semibold text-xs mb-2">&#128269; Narrowed down to: ${escapeHtml(data.winning_hypothesis || '')}</p>
+        <div class="space-y-1 mb-3">${hypLines}</div>
+        <button onclick="applyInvestigationResult('${wid}')"
+          class="text-xs px-3 py-1.5 rounded-lg border border-violet/40 text-violet hover:bg-violet/10 transition-colors">
+          Show the plan for this diagnosis
+        </button>
+      </div>
+    `;
+    return;
+  }
+
+  panel.innerHTML = `
+    <div class="bg-violet/10 border border-violet/40 rounded-xl px-4 py-3.5">
+      <p class="text-inkdim text-[10px] font-mono mb-2">question ${data.questions_asked + 1} of up to ${data.question_budget}</p>
+      <div class="space-y-1 mb-3">${hypLines}</div>
+      <p class="text-ink/90 text-xs mb-2">${escapeHtml(data.question || '')}</p>
+      <div class="flex gap-2">
+        <input type="text" class="investigate-answer-input flex-1 bg-surface border border-line rounded-lg px-3 py-1.5 text-xs text-ink"
+          placeholder="Type your answer…" onkeydown="if(event.key==='Enter'){event.preventDefault(); submitInvestigationAnswer('${wid}');}">
+        <button onclick="submitInvestigationAnswer('${wid}')"
+          class="text-xs px-3 py-1.5 rounded-lg border border-violet/40 text-violet hover:bg-violet/10 transition-colors">Send</button>
+      </div>
+    </div>
+  `;
+}
+
+async function submitInvestigationAnswer(wid) {
+  const el = document.getElementById(wid);
+  if (!el) return;
+  const input = el.querySelector('.investigate-answer-input');
+  const answer = (input && input.value || '').trim();
+  if (!answer) return;
+  const investigationId = window[`__inv_${wid}`].investigationId;
+  const panel = el.querySelector('.investigate-panel');
+  panel.innerHTML = `<p class="text-inkdim text-xs font-mono">thinking…</p>`;
+  try {
+    const res = await fetch(`${API_BASE}/v1/investigate/answer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ investigation_id: investigationId, answer }),
+    });
+    if (!res.ok) throw new Error(`${res.status}`);
+    renderInvestigationState(wid, await res.json());
+  } catch (err) {
+    panel.innerHTML = `<p class="text-red text-xs">Something went wrong continuing the diagnosis.</p>`;
+  }
+}
+
+// Swaps the main results view over to the REAL troubleshooting plan
+// investigator.py's _resolve() already produced by running this exact
+// complaint (plus the discriminated cause) through the normal pipeline --
+// never a plan this widget invents or formats itself.
+function applyInvestigationResult(wid) {
+  const data = window[`__inv_${wid}`].finalResult;
+  if (!data) return;
+  lastResult = data;
+  updateMetrics(data.meta || {});
+  renderContexts(data.response?.contexts || [], data.query, data.meta?.device_context_notes || [],
+                 data.meta?.session_notes || [], data.meta?.safety_alert || false,
+                 data.meta?.safety_reason || null, data.meta?.needs_clarification || false,
+                 data.meta?.clarifying_question || null, data.meta?.clarifying_topic_options || [],
+                 data.meta?.answer_source || null, data.meta?.related_possibilities || [],
+                 data.meta?.image_analysis || null, data.meta?.topic_stack || null,
+                 data.meta?.recovery || null);
+  window.scrollTo({ top: resultContainer.offsetTop - 20, behavior: 'smooth' });
 }
 
 // Task 38: packages the last full pipeline result (report.py, via
