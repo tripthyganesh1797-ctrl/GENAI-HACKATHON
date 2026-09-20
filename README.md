@@ -223,13 +223,32 @@ curl -X POST http://localhost:8000/v1/troubleshoot \
 curl -X POST http://localhost:8000/v1/report \
   -H "Content-Type: application/json" \
   -d '{"result": <the exact body /v1/troubleshoot returned>, "format": "markdown"}'
+
+# Goal-level "did this fix it?" Yes/No (point 5, see resolution.py) -- a
+# "No" reuses the same per-deeplink feedback/session-avoidance machinery
+# POST /v1/feedback already drives:
+curl -X POST http://localhost:8000/v1/resolution \
+  -H "Content-Type: application/json" \
+  -d '{"goal_title": "Battery fast drain", "resolved": false,
+       "deeplinks": [{"deeplink": "bixby://masked/act/...", "action_name": "Battery Settings"}]}'
+
+# Attach a photo of the problem (point 1, see image_analysis.py) -- folded
+# into the complaint text as a factual description before Stage 0 runs.
+# Degrades honestly (meta.image_analysis.reason) with no LLM key or a
+# non-vision-capable model configured -- this codebase's own coded default
+# (Groq's openai/gpt-oss-20b) is text-only, so set LLM_MODEL to a
+# vision-capable one (see llm_client.py's _VISION_CAPABLE_MODELS) to see
+# meta.image_analysis.analyzed=true:
+curl -X POST http://localhost:8000/v1/troubleshoot \
+  -H "Content-Type: application/json" \
+  -d '{"query": "my screen looks weird", "image_data_url": "data:image/jpeg;base64,<...>"}'
 ```
 
 ## Run the tests
 
 ```bash
 pip install -r requirements.txt   # includes pytest / httpx (dev-only, see bottom of the file)
-pytest                             # 330 tests, ~97% line coverage, runs in ~10s, no LLM key needed
+pytest                             # 464 tests, ~97% line coverage, runs in ~13s, no LLM key needed
 pytest --cov=. --cov-report=term-missing   # optional, needs pytest-cov (already in requirements.txt)
 ```
 
@@ -286,14 +305,22 @@ Point it at a running `uvicorn` server (`API_BASE` at the top of the
 simpler, earlier version of the same UI kept for reference.
 
 A result's panel also offers an optional **device state** disclosure
-(battery/storage/uptime, reorders relevant steps), **📋 copy report /
-⬇ download report** buttons (packages the result via `POST /v1/report`),
-and, on a browser that supports it, a **🔊 read steps aloud** control
-(Web Speech API `SpeechSynthesis`, entirely client-side). A low-confidence
-match also shows an amber **escalation banner** with a backup action, and
-👍/👎 feedback on a matched deeplink is session-scoped — mark one
-unhelpful and the *next* query in that same browser tab steers away from
-suggesting it again.
+(battery/storage/uptime, reorders relevant steps), a **📷 photo attach**
+button (client-side downscale to a 1024px JPEG before it's sent — see
+`image_analysis.py`), **📋 copy report / ⬇ download report** buttons
+(packages the result via `POST /v1/report`), and, on a browser that
+supports it, a **🔊 read steps aloud** control (Web Speech API
+`SpeechSynthesis`, entirely client-side). A low-confidence match also
+shows an amber **escalation banner** with a backup action, plus a
+**"might it be one of these instead?"** chip list of related possibilities
+(`related_issues.py`) and, under every goal, a **"did this fix it?"**
+Yes/No prompt (`resolution.py`) — a "No" surfaces those same alternative
+chips right there. A collapsible **"where did this answer come from?"**
+disclosure (`answer_source.py`) tells you whether a plan is official
+Samsung reference text, generic built-in knowledge, or an AI's general
+knowledge. 👍/👎 feedback on a matched deeplink is session-scoped — mark
+one unhelpful (directly, or via a "did this fix it?" No) and the *next*
+query in that same browser tab steers away from suggesting it again.
 
 Click **telemetry** in the top-right to open the **analytics dashboard**:
 live stat tiles, a requests-by-domain bar chart, a **trending issues**
@@ -308,7 +335,7 @@ with hover tooltips and a screen-reader-friendly table view, not mock data.
 | `schema.py` | Pydantic models — exact data contract from the theme guide |
 | `validators.py` | Programmatic checks (word counts, URL scrubbing, category ordering + safety-net re-sort) |
 | `prompts.py` | LLM prompts (Stage 0 enrichment — now explicitly multi-language, Stage 1 extraction) |
-| `llm_client.py` | Swappable LLM API wrapper (Anthropic / OpenAI / Groq) |
+| `llm_client.py` | Swappable LLM API wrapper (Anthropic / OpenAI / Groq) — plus `call_llm_vision()`/`is_vision_capable()` for point 1's image analysis, checked against the model actually configured rather than assumed |
 | `offline_fallback.py` | **Deterministic, zero-API-key replacement for Stages 0-1** — rule-based query enrichment + SIIS text parsing, $0 cost, no network |
 | `deeplink_matching.py` | Shared Stage 2 deeplink retrieval (BM25 + dense hybrid, or pure fuzzy-rules fallback), used by both execution paths and the ablation study; also owns the session-avoidance ranking helper (see `session_memory.py`) |
 | `escalation.py` | Shared confidence-gated escalation recommendation — attaches an honest caveat + real backup action to a low-confidence Goal without ever replacing the plan |
@@ -316,11 +343,15 @@ with hover tooltips and a screen-reader-friendly table view, not mock data.
 | `session_memory.py` | Session-scoped avoidance: a deeplink marked unhelpful (with a `session_id`) is steered away from in that session's later requests — distinct from `feedback.py`'s global re-ranking |
 | `safety.py` | Physical-hazard short-circuit (swollen battery, smoke, fire, sparks, chemical smell, burns) — narrow keyword-based detection that replaces the plan with a single "stop, don't charge, contact Samsung Support" Goal, on both execution paths, before Stage 0 or the cache ever runs |
 | `clarify.py` | Vague-complaint detection ("it's broken", "not working") — additive-only `meta.needs_clarification`/`clarifying_question` flag that never suppresses `response.contexts`; verified to never trip on any of the 20 official queries |
+| `answer_source.py` | Classifies WHERE a returned plan's content actually came from (official Samsung reference, generic built-in knowledge, AI general knowledge, or the safety rule) — `meta.answer_source`, surfaced in the UI as a small collapsible "where did this come from?" disclosure so a user can tell official Samsung guidance from an AI's best guess |
+| `related_issues.py` | When a plan's own confidence was borderline enough to already carry an `escalation` object, suggests 2-3 other plausible root causes for the same symptom (a hand-curated map keyed on `pipeline.py`'s existing symptom buckets) — `meta.related_possibilities`, empty whenever the engine is confident |
+| `resolution.py` | The goal-level "did this fix it?" Yes/No signal (`POST /v1/resolution`) — distinct from `feedback.py`'s per-deeplink thumbs up/down; fans a "No" out into that SAME per-deeplink scoring/session-avoidance machinery rather than duplicating it |
+| `image_analysis.py` | Point 1: turns an optionally-attached photo into a short factual description (never a diagnosis) that `pipeline.py` folds into the complaint text before Stage 0 — degrades honestly (`meta.image_analysis.reason`) when no key is configured, the model isn't vision-capable, or the call fails |
 | `report.py` | Packages an already-computed result into a shareable Markdown/HTML report (`POST /v1/report`) — a pure formatter, never re-runs the pipeline |
-| `pipeline.py` | Orchestrates: complaint → enrich → extract → validate → deeplink match → cache, choosing LLM vs offline path per-request |
+| `pipeline.py` | Orchestrates: (optional image →) complaint → enrich → extract → validate → deeplink match → cache, choosing LLM vs offline path per-request |
 | `cache.py` | Fast-path semantic cache (keyword overlap) |
-| `main.py` | FastAPI app: `POST /v1/troubleshoot(/batch)`, `GET /v1/troubleshoot/stream` (SSE), `POST /v1/feedback`, `POST /v1/report`, `GET /health`, `GET /stats` — warms the deeplink index at startup |
-| `index.html` | Polished demo UI — voice input + output, language selector, device-state panel, shareable reports, live analytics dashboard with trending issues |
+| `main.py` | FastAPI app: `POST /v1/troubleshoot(/batch)`, `GET /v1/troubleshoot/stream` (SSE), `POST /v1/feedback`, `POST /v1/resolution`, `POST /v1/report`, `GET /health`, `GET /stats` — warms the deeplink index at startup |
+| `index.html` | Polished demo UI — voice input + output, language selector, device-state panel, photo attach with client-side downscale, "where did this come from?" disclosure, related-possibilities chips, a "did this fix it?" resolution prompt, shareable reports, live analytics dashboard with trending issues |
 | `demo.html` | Simpler legacy demo UI |
 | `deeplinks.json` | **Real official catalog**: 578 masked deeplinks across the full Settings surface |
 | `siis_responses.json` | **Real official data**: 20 official SIIS support queries + their raw reference text |
