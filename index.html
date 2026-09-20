@@ -510,7 +510,8 @@ async function runDiagnosis() {
     renderContexts(data.response?.contexts || [], query, data.meta?.device_context_notes || [],
                    data.meta?.session_notes || [], data.meta?.safety_alert || false,
                    data.meta?.safety_reason || null, data.meta?.needs_clarification || false,
-                   data.meta?.clarifying_question || null, data.meta?.clarifying_topic_options || []);
+                   data.meta?.clarifying_question || null, data.meta?.clarifying_topic_options || [],
+                   data.meta?.answer_source || null);
 
   } catch (err) {
     setApiOnline(false);
@@ -770,9 +771,38 @@ function clarifyBanner(needsClarification, clarifyingQuestion, topicOptions) {
   `;
 }
 
-function renderContexts(contexts, query, deviceContextNotes = [], sessionNotes = [], safetyAlert = false, safetyReason = null, needsClarification = false, clarifyingQuestion = null, clarifyingTopicOptions = []) {
+// answer_source.py's classification, surfaced as a small COLLAPSIBLE
+// disclosure (native <details>/<summary>, no extra JS needed) -- "where
+// did this come from?" is a trust question, not an urgent alert, so unlike
+// the safety/clarify banners above it, this stays closed by default and
+// never demands attention. Skipped for the safety path (that banner
+// already states plainly it's a rule-based check, not Samsung content) and
+// for no_match (nothing to attribute a source to).
+const _SOURCE_STYLE = {
+  offline_official_reference: { icon: '📄', text: 'text-cyan' },
+  ai_official_reference: { icon: '📄', text: 'text-cyan' },
+  builtin_generic_knowledge: { icon: '📘', text: 'text-amber' },
+  ai_general_knowledge: { icon: '🧠', text: 'text-amber' },
+};
+function sourceDisclosure(answerSource) {
+  if (!answerSource || answerSource.type === 'safety_rule' || answerSource.type === 'no_match') return '';
+  const style = _SOURCE_STYLE[answerSource.type] || { icon: 'ℹ️', text: 'text-inkdim' };
+  return `
+    <details class="mb-5 bg-surface/40 border border-line rounded-xl px-4 py-3 fade-up group">
+      <summary class="cursor-pointer text-xs font-mono ${style.text} select-none flex items-center gap-2 list-none">
+        <span>${style.icon}</span>
+        <span>Where did this answer come from? — ${escapeHtml(answerSource.label || '')}</span>
+        <span class="ml-auto text-inkdim transition-transform group-open:rotate-180">▾</span>
+      </summary>
+      <p class="text-inkdim text-xs mt-2.5 leading-relaxed">${escapeHtml(answerSource.detail || '')}</p>
+    </details>
+  `;
+}
+
+function renderContexts(contexts, query, deviceContextNotes = [], sessionNotes = [], safetyAlert = false, safetyReason = null, needsClarification = false, clarifyingQuestion = null, clarifyingTopicOptions = [], answerSource = null) {
   const notesHtml = safetyBanner(safetyAlert, safetyReason) +
                      clarifyBanner(needsClarification, clarifyingQuestion, clarifyingTopicOptions) +
+                     sourceDisclosure(answerSource) +
                      deviceContextNotesBanner(deviceContextNotes) + sessionNotesBanner(sessionNotes);
   if (!contexts || contexts.length === 0) {
     resultContainer.innerHTML = `

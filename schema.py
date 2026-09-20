@@ -144,6 +144,11 @@ class Meta(BaseModel):
     needs_clarification: bool = False
     clarifying_question: Optional[str] = None
     clarifying_topic_options: List[str] = []
+    # answer_source.py -- where the plan's content actually came from
+    # (official Samsung reference, generic built-in knowledge, AI general
+    # knowledge, or the safety rule), surfaced for the UI's "where did this
+    # come from?" disclosure.
+    answer_source: Optional[Dict] = None
 
 
 class TroubleshootResponse(BaseModel):

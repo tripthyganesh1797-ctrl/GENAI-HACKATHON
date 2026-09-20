@@ -1,0 +1,105 @@
+"""
+answer_source.py — classifies WHERE a returned plan's content actually came
+from, so a user isn't left guessing whether an answer is real Samsung
+guidance or an AI's best guess.
+
+Why this exists: this service already tracks exactly this information
+internally (`used_offline_fallback`, `used_builtin_reference`, whether the
+caller supplied real `siis_response` text) but never surfaced it as a single,
+plain-language answer to "can I trust this?". A user comparing a
+troubleshooting engine's output against the real Samsung support app has
+every reason to wonder that, and an honest "here's where this came from"
+disclosure is cheap to build and directly reinforces trust -- which is the
+entire point of a *guided* troubleshooting engine over a black box.
+
+This module owns ONE function that takes the signals pipeline.py already
+computes and returns a single classification. It never invents a new
+signal -- it just names the five cases those existing signals already
+distinguish:
+
+  1. safety_rule           -- safety.py's hard hazard short-circuit fired.
+  2. official_reference     -- grounded in real Samsung/SIIS text the caller
+                                supplied (LLM path, with reference text) OR
+                                extracted from it directly (offline path,
+                                never AI-generated wording at all).
+  3. offline_official_reference -- same as (2) but via the deterministic
+                                offline extractor specifically -- called out
+                                separately because it's an even stronger
+                                trust signal (literally no generative model
+                                touched the wording, see offline_fallback.py).
+  4. builtin_generic_knowledge -- offline path, but no reference text was
+                                supplied, so it fell back to
+                                builtin_knowledge.py's hand-written *generic*
+                                (explicitly non-official) Android/Samsung
+                                advice.
+  5. ai_general_knowledge   -- LLM path, but the caller supplied no
+                                reference text either, so the plan comes
+                                from the model's own general knowledge of
+                                Samsung devices -- the least verifiable case,
+                                and the one most worth flagging honestly.
+"""
+from __future__ import annotations
+
+
+def classify_answer_source(*, safety_alert: bool, used_offline_fallback: bool,
+                            used_builtin_reference: bool, siis_response_provided: bool,
+                            has_contexts: bool) -> dict:
+    """Returns {"type", "label", "detail"} -- see module docstring for the
+    five cases. Always returns SOMETHING (never None/empty dict), even for
+    a no_match response, so callers never have to special-case a missing
+    classification."""
+    if safety_alert:
+        return {
+            "type": "safety_rule",
+            "label": "Rule-based safety check",
+            "detail": "Not from Samsung documentation -- a deterministic hazard "
+                       "check (swollen battery, smoke, sparks, etc.) matched this "
+                       "complaint and returned a fixed safety instruction instead "
+                       "of a software fix.",
+        }
+
+    if not has_contexts:
+        return {
+            "type": "no_match",
+            "label": "No match found",
+            "detail": "This complaint didn't clear the relevance bar against any "
+                       "known reference text or catalog action, so nothing was "
+                       "returned rather than guessing.",
+        }
+
+    if used_offline_fallback and not used_builtin_reference:
+        return {
+            "type": "offline_official_reference",
+            "label": "Official Samsung reference (extracted, not AI-generated)",
+            "detail": "Extracted directly from the official Samsung support text "
+                       "supplied with this request, using deterministic rules -- "
+                       "no generative model touched the wording of these steps.",
+        }
+
+    if used_offline_fallback and used_builtin_reference:
+        return {
+            "type": "builtin_generic_knowledge",
+            "label": "Generic knowledge base (not official Samsung content)",
+            "detail": "No official Samsung reference text was available for this "
+                       "complaint, so this used a small hand-written generic "
+                       "Android/Samsung troubleshooting reference -- ordinary, "
+                       "widely-known advice, not sourced from Samsung.",
+        }
+
+    if not used_offline_fallback and siis_response_provided:
+        return {
+            "type": "ai_official_reference",
+            "label": "Official Samsung reference (AI-assisted)",
+            "detail": "Generated by an AI model, grounded in the official Samsung "
+                       "support text supplied with this request.",
+        }
+
+    return {
+        "type": "ai_general_knowledge",
+        "label": "AI general knowledge (no official reference supplied)",
+        "detail": "No official Samsung reference text was provided for this "
+                   "complaint, so this answer draws on the AI model's own general "
+                   "knowledge of Samsung devices rather than a specific official "
+                   "document -- worth double-checking against Samsung Support if "
+                   "you're unsure.",
+    }

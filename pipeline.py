@@ -32,6 +32,7 @@ from device_signals import apply_device_context
 from session_memory import get_avoid_set
 from safety import detect_physical_hazard, build_safety_goal
 from clarify import detect_vague_complaint, build_clarifying_question, CLARIFYING_TOPIC_OPTIONS
+from answer_source import classify_answer_source
 import offline_fallback
 
 _PLACEHOLDER_KEYS = {None, "", "your_key_here"}
@@ -336,6 +337,11 @@ def _build_safety_response(raw_complaint: str, hazard_reason: str, start: float)
             "needs_clarification": False,
             "clarifying_question": None,
             "clarifying_topic_options": [],
+            "answer_source": classify_answer_source(
+                safety_alert=True, used_offline_fallback=False,
+                used_builtin_reference=False, siis_response_provided=False,
+                has_contexts=True,
+            ),
         },
     }
 
@@ -405,6 +411,18 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
         cached["meta"]["needs_clarification"] = needs_clarification
         cached["meta"]["clarifying_question"] = clarifying_question
         cached["meta"]["clarifying_topic_options"] = CLARIFYING_TOPIC_OPTIONS if needs_clarification else []
+        # answer_source (and related_possibilities, below) DO reflect how the
+        # cached plan was actually produced, so they're baked in at cache-write
+        # time and read as-is here -- except a cache entry written before this
+        # field existed, where .setdefault() backfills a safe classification
+        # rather than silently omitting it.
+        cached["meta"].setdefault("answer_source", classify_answer_source(
+            safety_alert=False,
+            used_offline_fallback=cached["meta"].get("used_offline_fallback", False),
+            used_builtin_reference=cached["meta"].get("used_builtin_reference", False),
+            siis_response_provided=bool(siis_response and siis_response.strip()),
+            has_contexts=bool(cached["response"]["contexts"]),
+        ))
         append_log({
             "domain_guess": _guess_topic(technical_query),
             "issue_guess": _guess_issue_phrase(technical_query),
@@ -468,6 +486,15 @@ def run_pipeline(raw_complaint: str, siis_response: str = "", device: Optional[d
             "needs_clarification": needs_clarification,
             "clarifying_question": clarifying_question,
             "clarifying_topic_options": CLARIFYING_TOPIC_OPTIONS if needs_clarification else [],
+            # Computed once here, not request-specific (unlike device/session
+            # notes below) -- flows through untouched on a cache hit exactly
+            # like used_offline_fallback/used_builtin_reference already do.
+            "answer_source": classify_answer_source(
+                safety_alert=False, used_offline_fallback=used_fallback_any,
+                used_builtin_reference=extraction.get("used_builtin_reference", False),
+                siis_response_provided=bool(siis_response and siis_response.strip()),
+                has_contexts=bool(contexts),
+            ),
         },
     }
 
@@ -569,6 +596,13 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
             cached["meta"]["needs_clarification"] = needs_clarification
             cached["meta"]["clarifying_question"] = clarifying_question
             cached["meta"]["clarifying_topic_options"] = CLARIFYING_TOPIC_OPTIONS if needs_clarification else []
+            cached["meta"].setdefault("answer_source", classify_answer_source(
+                safety_alert=False,
+                used_offline_fallback=cached["meta"].get("used_offline_fallback", False),
+                used_builtin_reference=cached["meta"].get("used_builtin_reference", False),
+                siis_response_provided=bool(siis_response and siis_response.strip()),
+                has_contexts=bool(cached["response"]["contexts"]),
+            ))
             yield {"stage": "cache", "status": "hit"}
             append_log({
                 "domain_guess": _guess_topic(technical_query),
@@ -645,6 +679,12 @@ def run_pipeline_streaming(raw_complaint: str, siis_response: str = "", device: 
                 "needs_clarification": needs_clarification,
                 "clarifying_question": clarifying_question,
                 "clarifying_topic_options": CLARIFYING_TOPIC_OPTIONS if needs_clarification else [],
+                "answer_source": classify_answer_source(
+                    safety_alert=False, used_offline_fallback=used_fallback_any,
+                    used_builtin_reference=extraction.get("used_builtin_reference", False),
+                    siis_response_provided=bool(siis_response and siis_response.strip()),
+                    has_contexts=bool(contexts),
+                ),
             },
         }
 
