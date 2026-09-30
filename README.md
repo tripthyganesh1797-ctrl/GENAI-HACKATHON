@@ -567,4 +567,4 @@ A few more, specific to this batch's 4 research-inspired extensions:
 
 
 in this readme at the beginning add this drive link and mention it as "drive link as video and ppt link" GenAI - Google Drive 
-don't change anything else
+don't change anything else 
