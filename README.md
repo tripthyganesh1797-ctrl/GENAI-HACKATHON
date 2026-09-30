@@ -1,5 +1,8 @@
 # Smart Guided Troubleshooting Engine
 
+**GenAI - Google Drive:** [Drive link as video and ppt link]
+
+
 Samsung PRISM GenAI Hackathon 3rd Edition — Theme 2
 
 Transforms a vague Galaxy device complaint ("screen flickers and battery dies
@@ -22,46 +25,46 @@ path actually ran.
 Beyond the core troubleshooting pipeline, the service also ships:
 
 - **Confidence-gated escalation** (`escalation.py`) — a Goal the engine
-  itself judged uncertain still returns its full plan, plus an honest
-  caveat and a real backup action (`goal.escalation`).
+  itself judged uncertain still returns its full plan, plus an honest
+  caveat and a real backup action (`goal.escalation`).
 - **Structured device-signal input** (`device_signals.py`) — optional
-  battery/storage/uptime context reorders same-category actions toward
-  what's actually relevant and adds a short advisory note; a no-op when
-  omitted.
+  battery/storage/uptime context reorders same-category actions toward
+  what's actually relevant and adds a short advisory note; a no-op when
+  omitted.
 - **Session-scoped avoidance** (`session_memory.py`) — mark a deeplink
-  unhelpful with a `session_id` and later requests in that same session
-  steer away from re-suggesting it, without touching the global
-  feedback-driven re-ranking.
+  unhelpful with a `session_id` and later requests in that same session
+  steer away from re-suggesting it, without touching the global
+  feedback-driven re-ranking.
 - **Trending issues on `/stats`** (`request_log.py`) — a finer-grained
-  "top recurring symptoms" breakdown (e.g. "Battery draining fast"), not
-  just a 5-bucket domain count.
+  "top recurring symptoms" breakdown (e.g. "Battery draining fast"), not
+  just a 5-bucket domain count.
 - **Shareable diagnostic reports** (`report.py`, `POST /v1/report`) —
-  packages an already-computed result into a compact Markdown or
-  self-contained HTML report a user can paste into a support ticket or
-  forward to someone else.
+  packages an already-computed result into a compact Markdown or
+  self-contained HTML report a user can paste into a support ticket or
+  forward to someone else.
 - **Voice output** — `index.html`'s results panel can read the current
-  plan aloud via the Web Speech API, alongside the existing voice *input*.
+  plan aloud via the Web Speech API, alongside the existing voice *input*.
 - **Physical-hazard safety short-circuit** (`safety.py`) — a swollen/
-  bulging battery, smoke, sparking, or a burning/chemical smell is a real
-  fire/burn risk, not a normal troubleshooting scenario. A narrow,
-  deterministic keyword check runs before anything else (before Stage 0,
-  before the cache) on both execution paths and, when it fires, replaces
-  the plan entirely with a single "stop using, don't charge, contact
-  Samsung Support" instruction — never software steps for this class of
-  complaint. `meta.safety_alert` / `meta.safety_reason` flag it for any
-  API/CLI/UI consumer; `index.html` renders an unmissable red banner.
+  bulging battery, smoke, sparking, or a burning/chemical smell is a real
+  fire/burn risk, not a normal troubleshooting scenario. A narrow,
+  deterministic keyword check runs before anything else (before Stage 0,
+  before the cache) on both execution paths and, when it fires, replaces
+  the plan entirely with a single "stop using, don't charge, contact
+  Samsung Support" instruction — never software steps for this class of
+  complaint. `meta.safety_alert` / `meta.safety_reason` flag it for any
+  API/CLI/UI consumer; `index.html` renders an unmissable red banner.
 - **Clarifying-question detection** (`clarify.py`) — a complaint like "my
-  phone isn't working" or "it's broken" gives the engine almost no signal
-  to work with. Rather than silently handing back a low-confidence guess,
-  `meta.needs_clarification` / `meta.clarifying_question` /
-  `meta.clarifying_topic_options` flag it, and `index.html` shows an
-  amber "could you tell us more?" banner with one-click topic chips
-  (Battery, Screen, Camera, Wi-Fi/Bluetooth, ...) that append the topic
-  and re-run instantly. Purely additive — unlike the safety short-circuit
-  above, the normal plan is still computed and returned in full; this
-  never suppresses `response.contexts`, which is why it can never put
-  gate G3's official-query coverage at risk (verified: none of the 20
-  official queries trip it).
+  phone isn't working" or "it's broken" gives the engine almost no signal
+  to work with. Rather than silently handing back a low-confidence guess,
+  `meta.needs_clarification` / `meta.clarifying_question` /
+  `meta.clarifying_topic_options` flag it, and `index.html` shows an
+  amber "could you tell us more?" banner with one-click topic chips
+  (Battery, Screen, Camera, Wi-Fi/Bluetooth, ...) that append the topic
+  and re-run instantly. Purely additive — unlike the safety short-circuit
+  above, the normal plan is still computed and returned in full; this
+  never suppresses `response.contexts`, which is why it can never put
+  gate G3's official-query coverage at risk (verified: none of the 20
+  official queries trip it).
 
 ### Research-paper-inspired extensions
 
@@ -71,39 +74,39 @@ literal port — see each module's docstring for the full honest mapping
 between the paper's method and what's actually implemented here.
 
 - **CLAM-inspired ambiguity confidence** (`ambiguity.py`, from *"CLAM:
-  Selective Clarification for Ambiguous Questions with Generative Language
-  Models"*) — a second, LLM-based opinion layered on top of `clarify.py`'s
-  zero-cost keyword heuristic. It can only ever RAISE the heuristic's
-  "needs clarification" verdict, never lower it, and it's a complete no-op
-  with no LLM key configured — so every guarantee `clarify.py` already had
-  (including never risking gate G3's coverage) stays fully intact.
-  `meta.ambiguity`.
+  Selective Clarification for Ambiguous Questions with Generative Language
+  Models"*) — a second, LLM-based opinion layered on top of `clarify.py`'s
+  zero-cost keyword heuristic. It can only ever RAISE the heuristic's
+  "needs clarification" verdict, never lower it, and it's a complete no-op
+  with no LLM key configured — so every guarantee `clarify.py` already had
+  (including never risking gate G3's coverage) stays fully intact.
+  `meta.ambiguity`.
 - **Guided-Retry recovery** (`recovery.py`, from *"When the Database
-  Fails: Prompting LLM Dialogue Agents for Safe Recovery in Task-Oriented
-  Dialogue"*) — when Stage 1's LLM call actually fails (not a legitimate
-  empty result — a real error), one structured retry with an explicit
-  recovery instruction is attempted before falling through to the offline
-  path, instead of a silent, "naive" drop straight to offline with zero
-  visibility into what happened. `meta.recovery`.
+  Fails: Prompting LLM Dialogue Agents for Safe Recovery in Task-Oriented
+  Dialogue"*) — when Stage 1's LLM call actually fails (not a legitimate
+  empty result — a real error), one structured retry with an explicit
+  recovery instruction is attempted before falling through to the offline
+  path, instead of a silent, "naive" drop straight to offline with zero
+  visibility into what happened. `meta.recovery`.
 - **SIA-inspired interactive investigator** (`investigator.py`, `POST
-  /v1/investigate/start` + `/answer`, from *"LLM-as-an-Investigator:
-  Evidence-First Reasoning for Robust Interactive Problem Diagnosis"*) —
-  an opt-in short Q&A that maintains a probability distribution over 2-3
-  candidate root causes (reusing `related_issues.py`'s curated data),
-  asks one targeted discriminative question at a time, updates the
-  distribution from the answer, and stops once a hypothesis clears 90%
-  confidence or 3 questions have been asked — then runs the *real*
-  pipeline against the winning hypothesis rather than inventing its own
-  plan. Fully offline-capable (a deterministic question sequence + a
-  keyword-bucket probability update) with an LLM-assisted upgrade when a
-  key is configured.
+  /v1/investigate/start` + `/answer`, from *"LLM-as-an-Investigator:
+  Evidence-First Reasoning for Robust Interactive Problem Diagnosis"*) —
+  an opt-in short Q&A that maintains a probability distribution over 2-3
+  candidate root causes (reusing `related_issues.py`'s curated data),
+  asks one targeted discriminative question at a time, updates the
+  distribution from the answer, and stops once a hypothesis clears 90%
+  confidence or 3 questions have been asked — then runs the *real*
+  pipeline against the winning hypothesis rather than inventing its own
+  plan. Fully offline-capable (a deterministic question sequence + a
+  keyword-bucket probability update) with an LLM-assisted upgrade when a
+  key is configured.
 - **DiagGPT-inspired session topic stack** (`topic_manager.py`, from
-  *"DiagGPT: An LLM-based and Multi-agent Dialogue System with Automatic
-  Topic Management for Flexible Task-Oriented Dialogue"*) — tracks a
-  per-session stack of symptom "topics" (stay on the current one, open a
-  new one, or jump back to one mentioned earlier), using a deterministic
-  bucket match instead of DiagGPT's own per-turn LLM agent. `meta.topic_stack`,
-  shown in `index.html` as a small "this session:" chip trail.
+  *"DiagGPT: An LLM-based and Multi-agent Dialogue System with Automatic
+  Topic Management for Flexible Task-Oriented Dialogue"*) — tracks a
+  per-session stack of symptom "topics" (stay on the current one, open a
+  new one, or jump back to one mentioned earlier), using a deterministic
+  bucket match instead of DiagGPT's own per-turn LLM agent. `meta.topic_stack`,
+  shown in `index.html` as a small "this session:" chip trail.
 
 **Contents:** [Architecture](#architecture) · [Setup](#setup) · [Run the pipeline directly](#run-the-pipeline-directly-no-server-needed-fastest-way-to-test) · [Run the API server](#run-the-api-server) · [Run the tests](#run-the-tests) · [Run with Docker](#run-with-docker) · [Try the demo UI](#try-the-demo-ui) · [Project structure](#project-structure) · [Production-readiness notes](#production-readiness-notes) · [Submission checklist](#submission-checklist-per-hackathon_guidelinespdf) · [Known limitations](#known-limitations)
 
@@ -117,52 +120,52 @@ good the extracted troubleshooting content is.
 
 ```mermaid
 flowchart TD
-    U["User complaint\n(text, voice, or any language)"] --> API
+    U["User complaint\n(text, voice, or any language)"] --> API
 
-    subgraph API["FastAPI (main.py)"]
-        direction TB
-        MW["middleware.py: request ID -> rate limit -> CORS"]
-        EP1["POST /v1/troubleshoot"]
-        EP2["GET /v1/troubleshoot/stream (SSE)"]
-        EP3["POST /v1/feedback"]
-        EP4["GET /stats · /health (rate-limit exempt)"]
-        EP5["POST /v1/troubleshoot/batch\n(1-20 items, own rate limit)"]
-        MW --> EP1 & EP2 & EP3 & EP4 & EP5
-    end
+    subgraph API["FastAPI (main.py)"]
+        direction TB
+        MW["middleware.py: request ID -> rate limit -> CORS"]
+        EP1["POST /v1/troubleshoot"]
+        EP2["GET /v1/troubleshoot/stream (SSE)"]
+        EP3["POST /v1/feedback"]
+        EP4["GET /stats · /health (rate-limit exempt)"]
+        EP5["POST /v1/troubleshoot/batch\n(1-20 items, own rate limit)"]
+        MW --> EP1 & EP2 & EP3 & EP4 & EP5
+    end
 
-    EP1 --> S0
-    EP2 --> S0
-    EP5 -. "runs the full pipeline\nonce per item" .-> S0
+    EP1 --> S0
+    EP2 --> S0
+    EP5 -. "runs the full pipeline\nonce per item" .-> S0
 
-    S0{"Stage 0: enrich\nLLM_API_KEY set?"}
-    S0 -- "yes, LLM reachable" --> L0["LLM: normalise + translate\n+ 8-10 paraphrases\n(prompts.py / llm_client.py)"]
-    S0 -- "no key, or call/JSON-parse fails" --> O0["offline_fallback.py\nrule-based enrich, $0, + Hinglish phrasebook"]
+    S0{"Stage 0: enrich\nLLM_API_KEY set?"}
+    S0 -- "yes, LLM reachable" --> L0["LLM: normalise + translate\n+ 8-10 paraphrases\n(prompts.py / llm_client.py)"]
+    S0 -- "no key, or call/JSON-parse fails" --> O0["offline_fallback.py\nrule-based enrich, $0, + Hinglish phrasebook"]
 
-    L0 --> CACHE
-    O0 --> CACHE
-    CACHE{"Semantic cache hit?\n(cache.py, Jaccard overlap)"}
-    CACHE -- "yes" --> RESP
-    CACHE -- "no" --> S1
+    L0 --> CACHE
+    O0 --> CACHE
+    CACHE{"Semantic cache hit?\n(cache.py, Jaccard overlap)"}
+    CACHE -- "yes" --> RESP
+    CACHE -- "no" --> S1
 
-    S1{"Stage 1: extract"}
-    S1 -- "LLM" --> L1["LLM: Goal/Action/StepGroup JSON\n+ multi-issue splitting"]
-    S1 -- "offline" --> O1["offline_fallback.py\nparse SIIS text, group steps,\nsplit multi-issue complaints"]
+    S1{"Stage 1: extract"}
+    S1 -- "LLM" --> L1["LLM: Goal/Action/StepGroup JSON\n+ multi-issue splitting"]
+    S1 -- "offline" --> O1["offline_fallback.py\nparse SIIS text, group steps,\nsplit multi-issue complaints"]
 
-    L1 --> VAL
-    O1 --> VAL
-    VAL["validators.py\nword counts · goal syntax · URL scrub\ncritical-safety override · re-sort"]
+    L1 --> VAL
+    O1 --> VAL
+    VAL["validators.py\nword counts · goal syntax · URL scrub\ncritical-safety override · re-sort"]
 
-    VAL --> S2
-    S2["Stage 2: deeplink matching\n(deeplink_matching.py — always code, never the LLM)"]
-    S2 --> HYB["HybridDeeplinkIndex\nBM25 + dense (sentence-transformers\nor offline TF-IDF/SVD)"]
-    S2 --> RUL["RulesDeeplinkIndex\nfuzzy keyword match (rapidfuzz)"]
-    HYB & RUL --> FB[("feedback.py\nper-deeplink score adjustment")]
+    VAL --> S2
+    S2["Stage 2: deeplink matching\n(deeplink_matching.py — always code, never the LLM)"]
+    S2 --> HYB["HybridDeeplinkIndex\nBM25 + dense (sentence-transformers\nor offline TF-IDF/SVD)"]
+    S2 --> RUL["RulesDeeplinkIndex\nfuzzy keyword match (rapidfuzz)"]
+    HYB & RUL --> FB[("feedback.py\nper-deeplink score adjustment")]
 
-    HYB --> RESP
-    RUL --> RESP
-    RESP["Validated response\n(contexts + meta)"] --> LOG[("request_log.jsonl\n→ /stats")]
+    HYB --> RESP
+    RUL --> RESP
+    RESP["Validated response\n(contexts + meta)"] --> LOG[("request_log.jsonl\n→ /stats")]
 
-    EP3 --> FBWRITE["feedback.record_feedback()"] --> FB
+    EP3 --> FBWRITE["feedback.record_feedback()"] --> FB
 ```
 
 **Why this shape:** Stage 2 and the validators are shared, not
@@ -178,9 +181,9 @@ about how the complaint was understood.
 
 ```bash
 python3 -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env            # optional — only needed for the LLM path
+cp .env.example .env            # optional — only needed for the LLM path
 ```
 
 The service works with **zero setup beyond `pip install`** — without a
@@ -232,8 +235,8 @@ uvicorn main:app --reload --port 8000
 Test it:
 ```bash
 curl -X POST http://localhost:8000/v1/troubleshoot \
-  -H "Content-Type: application/json" \
-  -d '{"query": "screen flickers and the battery dies fast"}'
+  -H "Content-Type: application/json" \
+  -d '{"query": "screen flickers and the battery dies fast"}'
 
 curl http://localhost:8000/health
 curl http://localhost:8000/stats
@@ -243,36 +246,36 @@ curl -N "http://localhost:8000/v1/troubleshoot/stream?query=screen+flickers+and+
 
 # Thumbs up/down on a specific matched deeplink (drives adaptive re-ranking, see feedback.py):
 curl -X POST http://localhost:8000/v1/feedback \
-  -H "Content-Type: application/json" \
-  -d '{"deeplink": "bixby://masked/act/...", "action_name": "Battery Settings", "helpful": true}'
+  -H "Content-Type: application/json" \
+  -d '{"deeplink": "bixby://masked/act/...", "action_name": "Battery Settings", "helpful": true}'
 
 # Batch: up to 20 complaints in one round trip (e.g. a device health-check
 # screen probing several known symptoms at once). One item failing doesn't
 # fail the others -- each result is reported individually as {"ok": ...}.
 curl -X POST http://localhost:8000/v1/troubleshoot/batch \
-  -H "Content-Type: application/json" \
-  -d '{"items": [{"query": "battery drains fast"}, {"query": "screen flickers"}]}'
+  -H "Content-Type: application/json" \
+  -d '{"items": [{"query": "battery drains fast"}, {"query": "screen flickers"}]}'
 
 # Optional device context + session_id -- reorders relevant actions and adds
 # an advisory note; session_id lets a later request in the same session
 # avoid re-suggesting a deeplink marked unhelpful via POST /v1/feedback:
 curl -X POST http://localhost:8000/v1/troubleshoot \
-  -H "Content-Type: application/json" \
-  -d '{"query": "battery drains fast", "device": {"battery_pct": 8}, "session_id": "demo-1"}'
+  -H "Content-Type: application/json" \
+  -d '{"query": "battery drains fast", "device": {"battery_pct": 8}, "session_id": "demo-1"}'
 
 # Package an already-computed result into a shareable Markdown/HTML report
 # (never re-runs the pipeline -- see report.py):
 curl -X POST http://localhost:8000/v1/report \
-  -H "Content-Type: application/json" \
-  -d '{"result": <the exact body /v1/troubleshoot returned>, "format": "markdown"}'
+  -H "Content-Type: application/json" \
+  -d '{"result": <the exact body /v1/troubleshoot returned>, "format": "markdown"}'
 
 # Goal-level "did this fix it?" Yes/No (point 5, see resolution.py) -- a
 # "No" reuses the same per-deeplink feedback/session-avoidance machinery
 # POST /v1/feedback already drives:
 curl -X POST http://localhost:8000/v1/resolution \
-  -H "Content-Type: application/json" \
-  -d '{"goal_title": "Battery fast drain", "resolved": false,
-       "deeplinks": [{"deeplink": "bixby://masked/act/...", "action_name": "Battery Settings"}]}'
+  -H "Content-Type: application/json" \
+  -d '{"goal_title": "Battery fast drain", "resolved": false,
+       "deeplinks": [{"deeplink": "bixby://masked/act/...", "action_name": "Battery Settings"}]}'
 
 # Attach a photo of the problem (point 1, see image_analysis.py) -- folded
 # into the complaint text as a factual description before Stage 0 runs.
@@ -282,30 +285,30 @@ curl -X POST http://localhost:8000/v1/resolution \
 # vision-capable one (see llm_client.py's _VISION_CAPABLE_MODELS) to see
 # meta.image_analysis.analyzed=true:
 curl -X POST http://localhost:8000/v1/troubleshoot \
-  -H "Content-Type: application/json" \
-  -d '{"query": "my screen looks weird", "image_data_url": "data:image/jpeg;base64,<...>"}'
+  -H "Content-Type: application/json" \
+  -d '{"query": "my screen looks weird", "image_data_url": "data:image/jpeg;base64,<...>"}'
 
 # SIA-inspired interactive diagnosis (see investigator.py) -- instead of
 # committing to the engine's first guess, ask a short targeted Q&A to
 # narrow down WHICH of several candidate root causes is actually correct,
 # then run the normal pipeline against the winning one:
 curl -X POST http://localhost:8000/v1/investigate/start \
-  -H "Content-Type: application/json" \
-  -d '{"complaint": "my battery drains really fast", "session_id": "demo-1"}'
+  -H "Content-Type: application/json" \
+  -d '{"complaint": "my battery drains really fast", "session_id": "demo-1"}'
 # -> {"investigation_id": "...", "status": "in_progress", "question": "...", "hypotheses": [...]}
 curl -X POST http://localhost:8000/v1/investigate/answer \
-  -H "Content-Type: application/json" \
-  -d '{"investigation_id": "<from above>", "answer": "it happens every single time, consistently"}'
+  -H "Content-Type: application/json" \
+  -d '{"investigation_id": "<from above>", "answer": "it happens every single time, consistently"}'
 # -> repeat until "status": "resolved", which includes a real final_result
-#    (the exact same shape POST /v1/troubleshoot returns)
+#    (the exact same shape POST /v1/troubleshoot returns)
 ```
 
 ## Run the tests
 
 ```bash
-pip install -r requirements.txt   # includes pytest / httpx (dev-only, see bottom of the file)
-pytest                             # 536 tests, ~97% line coverage, runs in ~13s, no LLM key needed
-pytest --cov=. --cov-report=term-missing   # optional, needs pytest-cov (already in requirements.txt)
+pip install -r requirements.txt   # includes pytest / httpx (dev-only, see bottom of the file)
+pytest                             # 536 tests, ~97% line coverage, runs in ~13s, no LLM key needed
+pytest --cov=. --cov-report=term-missing   # optional, needs pytest-cov (already in requirements.txt)
 ```
 
 Covers the data contract (`test_validators.py`, `test_schema.py`), the
@@ -329,14 +332,14 @@ limiting, request IDs, structured errors):
 
 ```bash
 python cli.py query "battery drains fast and camera lags on open"
-python cli.py query "screen flickers" --siis-file samples/screen.txt --verbose   # --verbose shows the matchExplanation breakdown
-python cli.py stream "screen flickers and touch is laggy"                       # live stage-by-stage, same events the SSE endpoint emits
-python cli.py batch sample_queries_real.json --out results.json                 # runs all 20 official queries, writes full results
-python cli.py --api-base http://localhost:8000 batch queries.json               # same, but against a live server (uses POST /v1/troubleshoot/batch)
+python cli.py query "screen flickers" --siis-file samples/screen.txt --verbose   # --verbose shows the matchExplanation breakdown
+python cli.py stream "screen flickers and touch is laggy"                       # live stage-by-stage, same events the SSE endpoint emits
+python cli.py batch sample_queries_real.json --out results.json                 # runs all 20 official queries, writes full results
+python cli.py --api-base http://localhost:8000 batch queries.json               # same, but against a live server (uses POST /v1/troubleshoot/batch)
 python cli.py --api-base http://localhost:8000 health
 python cli.py --api-base http://localhost:8000 stats
-python cli.py feedback bixby://masked/act/... "Wifi Settings" --unhelpful --session-id demo-1  # then re-run `query` with the same --session-id to see it steer away
-python cli.py report "camera app keeps crashing" --format html -o report.html                  # package a result as a shareable report
+python cli.py feedback bixby://masked/act/... "Wifi Settings" --unhelpful --session-id demo-1  # then re-run `query` with the same --session-id to see it steer away
+python cli.py report "camera app keeps crashing" --format html -o report.html                  # package a result as a shareable report
 ```
 
 Zero third-party dependencies for the `--api-base` HTTP calls (stdlib
@@ -347,8 +350,8 @@ install that skips the "dev / test only" section of `requirements.txt`.
 
 ```bash
 docker build -t troubleshoot-engine .
-docker run -p 8000:8000 troubleshoot-engine                       # offline mode
-docker run -p 8000:8000 -e LLM_PROVIDER=groq -e LLM_API_KEY=xxx troubleshoot-engine  # LLM mode
+docker run -p 8000:8000 troubleshoot-engine                       # offline mode
+docker run -p 8000:8000 -e LLM_PROVIDER=groq -e LLM_API_KEY=xxx troubleshoot-engine  # LLM mode
 ```
 
 ## Try the demo UI
@@ -466,16 +469,16 @@ also carries a `matchExplanation` object — the score breakdown behind
 
 ```json
 "matchExplanation": {
-  "matcher": "hybrid_bm25_dense",
-  "dense_kind": "tfidf-svd-128 (offline fallback; sentence-transformers unavailable)",
-  "alpha": 0.5,
-  "bm25_component": 1.0,
-  "dense_component": 0.8466,
-  "combined_before_feedback": 0.9233,
-  "feedback_adjustment": 0.0,
-  "final_score": 0.9233,
-  "threshold": 0.12,
-  "matched_keywords": ["data", "fi", "mobile", "stable", "wi"]
+  "matcher": "hybrid_bm25_dense",
+  "dense_kind": "tfidf-svd-128 (offline fallback; sentence-transformers unavailable)",
+  "alpha": 0.5,
+  "bm25_component": 1.0,
+  "dense_component": 0.8466,
+  "combined_before_feedback": 0.9233,
+  "feedback_adjustment": 0.0,
+  "final_score": 0.9233,
+  "threshold": 0.12,
+  "matched_keywords": ["data", "fi", "mobile", "stable", "wi"]
 }
 ```
 
@@ -524,34 +527,40 @@ fallback is a $0/always-available degrade, not a drop-in replacement.
 A few more, specific to this batch's 4 research-inspired extensions:
 
 - **`ambiguity.py`'s CLAM-style confidence is a self-reported score, not a
-  literal log-probability.** The paper's own method reads the model's
-  log-prob on a "True"/"False" token; none of this project's provider SDKs
-  (Anthropic/OpenAI/Groq chat-completions) expose per-token log-probs
-  without switching to a completions-style API this codebase doesn't use
-  elsewhere, so a structured few-shot self-report is used instead —
-  documented as exactly that in the module docstring, not dressed up as
-  the paper's literal method. Fully inert with no LLM key configured.
+  literal log-probability.** The paper's own method reads the model's
+  log-prob on a "True"/"False" token; none of this project's provider SDKs
+  (Anthropic/OpenAI/Groq chat-completions) expose per-token log-probs
+  without switching to a completions-style API this codebase doesn't use
+  elsewhere, so a structured few-shot self-report is used instead —
+  documented as exactly that in the module docstring, not dressed up as
+  the paper's literal method. Fully inert with no LLM key configured.
 - **`investigator.py`'s offline mode has a fixed, 3-question generic
-  question pool** (`_GENERIC_DISCRIMINATIVE_QUESTIONS`) rather than
-  genuinely tailored per-symptom questions — an LLM key upgrades this to
-  real per-turn generated questions. The offline probability update is a
-  simple keyword-bucket heuristic (software/hardware/external), not a
-  learned or LLM-driven Bayesian update — see the module docstring for the
-  full honest mapping to the paper's method.
+  question pool** (`_GENERIC_DISCRIMINATIVE_QUESTIONS`) rather than
+  genuinely tailored per-symptom questions — an LLM key upgrades this to
+  real per-turn generated questions. The offline probability update is a
+  simple keyword-bucket heuristic (software/hardware/external), not a
+  learned or LLM-driven Bayesian update — see the module docstring for the
+  full honest mapping to the paper's method.
 - **`investigator.py`'s session state is in-process only**, same
-  documented tradeoff as `middleware.py`'s rate limiter — an investigation
-  in progress is lost on a server restart. Fine for a short, few-round-trip
-  interaction in a hackathon-scale demo; a real deployment would move this
-  to a shared store (Redis, same as the rate limiter's own noted upgrade
-  path).
+  documented tradeoff as `middleware.py`'s rate limiter — an investigation
+  in progress is lost on a server restart. Fine for a short, few-round-trip
+  interaction in a hackathon-scale demo; a real deployment would move this
+  to a shared store (Redis, same as the rate limiter's own noted upgrade
+  path).
 - **`recovery.py`'s Guided-Retry only covers Stage 1's LLM call**, not
-  Stage 0's enrichment call — this project has no live backend database to
-  inject the paper's specific empty-result/wrong-domain fault types into,
-  so the scope is narrowed to the one place an actual LLM-call failure can
-  happen and be usefully retried; see the module's own scope note.
+  Stage 0's enrichment call — this project has no live backend database to
+  inject the paper's specific empty-result/wrong-domain fault types into,
+  so the scope is narrowed to the one place an actual LLM-call failure can
+  happen and be usefully retried; see the module's own scope note.
 - **`topic_manager.py`'s topic identity is `pipeline.py`'s existing
-  ~17-bucket keyword vocabulary**, not a genuine semantic topic model — two
-  complaints that are really about different things but share a bucket
-  (or vice versa) can be mis-tracked. Same tradeoff this codebase already
-  makes everywhere else it uses that bucket vocabulary (`/stats`'s
-  trending issues, `related_issues.py`).
+  ~17-bucket keyword vocabulary**, not a genuine semantic topic model — two
+  complaints that are really about different things but share a bucket
+  (or vice versa) can be mis-tracked. Same tradeoff this codebase already
+  makes everywhere else it uses that bucket vocabulary (`/stats`'s
+  trending issues, `related_issues.py`).
+
+
+
+
+in this readme at the beginning add this drive link and mention it as "drive link as video and ppt link" GenAI - Google Drive 
+don't change anything else
