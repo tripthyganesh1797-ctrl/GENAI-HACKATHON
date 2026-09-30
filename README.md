@@ -1,6 +1,6 @@
 # Smart Guided Troubleshooting Engine
 
-**GenAI - Google Drive:** [Drive link as video and ppt link]
+**GenAI - Google Drive:** [[https://drive.google.com/drive/u/0/folders/1nGRBihNH4eYMUosMETzAHrRJh_vWTfOj]]
 
 
 Samsung PRISM GenAI Hackathon 3rd Edition — Theme 2
