@@ -534,6 +534,7 @@ A few more, specific to this batch's 4 research-inspired extensions:
   elsewhere, so a structured few-shot self-report is used instead —
   documented as exactly that in the module docstring, not dressed up as
   the paper's literal method. Fully inert with no LLM key configured.
+  
 - **`investigator.py`'s offline mode has a fixed, 3-question generic
   question pool** (`_GENERIC_DISCRIMINATIVE_QUESTIONS`) rather than
   genuinely tailored per-symptom questions — an LLM key upgrades this to
@@ -541,17 +542,20 @@ A few more, specific to this batch's 4 research-inspired extensions:
   simple keyword-bucket heuristic (software/hardware/external), not a
   learned or LLM-driven Bayesian update — see the module docstring for the
   full honest mapping to the paper's method.
+  
 - **`investigator.py`'s session state is in-process only**, same
   documented tradeoff as `middleware.py`'s rate limiter — an investigation
   in progress is lost on a server restart. Fine for a short, few-round-trip
   interaction in a hackathon-scale demo; a real deployment would move this
   to a shared store (Redis, same as the rate limiter's own noted upgrade
   path).
+  
 - **`recovery.py`'s Guided-Retry only covers Stage 1's LLM call**, not
   Stage 0's enrichment call — this project has no live backend database to
   inject the paper's specific empty-result/wrong-domain fault types into,
   so the scope is narrowed to the one place an actual LLM-call failure can
   happen and be usefully retried; see the module's own scope note.
+  
 - **`topic_manager.py`'s topic identity is `pipeline.py`'s existing
   ~17-bucket keyword vocabulary**, not a genuine semantic topic model — two
   complaints that are really about different things but share a bucket
