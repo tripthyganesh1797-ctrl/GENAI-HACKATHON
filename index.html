@@ -6,32 +6,7 @@
 <title>Galaxy Diagnostics — Smart Guided Troubleshooting</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdn.tailwindcss.com"></script>
-<script>
-  tailwind.config = {
-    theme: {
-      extend: {
-        colors: {
-          void: '#0A0E17',
-          surface: '#10151F',
-          surface2: '#161C2A',
-          line: '#212838',
-          ink: '#E7ECF5',
-          inkdim: '#8890A3',
-          cyan: '#4CE0D2',
-          amber: '#FFB454',
-          red: '#FF5C6C',
-          violet: '#8B7CFF',
-        },
-        fontFamily: {
-          display: ['Space Grotesk', 'sans-serif'],
-          mono: ['JetBrains Mono', 'monospace'],
-          body: ['Inter', 'sans-serif'],
-        }
-      }
-    }
-  }
-</script>
+<link rel="stylesheet" href="tailwind.css">
 <style>
   @keyframes scan { 0% { transform: translateY(-100%); } 100% { transform: translateY(220%); } }
   @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
@@ -1511,19 +1486,35 @@ closeTelemetry.addEventListener('click', () => {
 
 const tooltip = document.getElementById('chartTooltip');
 
+let tooltipPinned = false;
+
 function showTooltip(evt, html) {
+  if (tooltipPinned) return;
   tooltip.innerHTML = html;
   tooltip.classList.remove('hidden');
   moveTooltip(evt);
 }
 function moveTooltip(evt) {
+  if (tooltipPinned) return;
   const pad = 14;
   tooltip.style.left = `${evt.clientX + pad}px`;
   tooltip.style.top = `${evt.clientY + pad}px`;
 }
 function hideTooltip() {
+  if (tooltipPinned) return;
   tooltip.classList.add('hidden');
 }
+function pinTooltip(evt, html) {
+  tooltipPinned = false;
+  showTooltip(evt, html);
+  tooltipPinned = true;
+  evt.stopPropagation();
+}
+document.addEventListener('click', (e) => {
+  if (e.target.closest('[data-tip]')) return;
+  tooltipPinned = false;
+  tooltip.classList.add('hidden');
+});
 
 function statTile(label, value, colorClass = 'text-ink') {
   return `
@@ -1552,9 +1543,11 @@ function labeledBarChart(counts, labelWidthClass = 'w-20') {
   const rows = entries.map(([label, count], i) => {
     const pct = max > 0 ? (count / max) * barMaxW : 0;
     const share = total > 0 ? Math.round((count / total) * 100) : 0;
+    const tip = `<b>${escapeHtml(label)}</b><br>${count} request${count === 1 ? '' : 's'} (${share}%)`;
     return `
-      <div class="flex items-center gap-3" style="height:${rowH}px"
-           onmouseenter="showTooltip(event, '<b>${escapeHtml(label)}</b><br>${count} request${count === 1 ? '' : 's'} (${share}%)')"
+      <div class="flex items-center gap-3 cursor-pointer" style="height:${rowH}px" data-tip
+           onmouseenter="showTooltip(event, '${tip}')"
+           onclick="pinTooltip(event, '${tip}')"
            onmousemove="moveTooltip(event)" onmouseleave="hideTooltip()">
         <div class="${labelWidthClass} shrink-0 text-inkdim text-[11px] font-mono truncate">${escapeHtml(label)}</div>
         <div class="flex-1 bg-void rounded-full h-[10px] relative overflow-hidden">
